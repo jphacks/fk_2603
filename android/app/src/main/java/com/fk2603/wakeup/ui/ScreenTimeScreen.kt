@@ -129,6 +129,13 @@ fun ScreenTimeScreen() {
         item { AfterCard(baselineMs, after.values.toList()) }
         item { WeekdayCard(ScreenTimeMath.byWeekday(data.daily, data.installDay, today)) }
 
+        item { SectionTitle("曜日ごとの記録（導入前の同じ曜日との差）") }
+        val grouped = ScreenTimeMath.groupByWeekday(data.daily, data.installDay, today)
+        items(DayOfWeek.values().toList()) { dow ->
+            val (before, afterList) = grouped.getValue(dow)
+            WeekdayDetail(dow, before, afterList)
+        }
+
         item { SectionTitle("日ごとの合計（点線＝導入前の1か月平均）") }
         val maxMs = maxOf(data.daily.values.maxOrNull() ?: 0L, baselineMs ?: 0L).coerceAtLeast(1L)
         items(data.daily.keys.sortedDescending()) { d ->
@@ -245,6 +252,33 @@ private fun WeekdayCard(rows: List<com.fk2603.wakeup.WeekdayRow>) {
             Text("（ ）内は日数。導入前は日ごとの記録が残っていた日だけの参考値です", style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+@Composable
+private fun WeekdayDetail(dow: DayOfWeek, before: List<Pair<LocalDate, Long>>, after: List<Pair<LocalDate, Long>>) {
+    // 導入前の同じ曜日（ふつうは1日分）を基準にする
+    val ref = before.takeIf { it.isNotEmpty() }?.map { it.second }?.average()?.toLong()
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(dow.getDisplayName(TextStyle.FULL, Locale.JAPANESE), fontWeight = FontWeight.Bold)
+        if (before.isEmpty() && after.isEmpty()) Text("　記録なし", style = MaterialTheme.typography.bodySmall)
+        before.forEach { (d, ms) ->
+            Text("　導入前 ${d.format(DATE)}  ${formatMinutes(ms)}", color = BEFORE_COLOR)
+        }
+        after.forEach { (d, ms) ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("　導入後 ${d.format(DATE)}  ${formatMinutes(ms)}", color = AFTER_COLOR)
+                if (ref != null) {
+                    val diff = ms - ref
+                    Text(formatDiff(diff), color = if (diff <= 0) GOOD_COLOR else BAD_COLOR)
+                }
+            }
+        }
+        if (after.size >= 2) {
+            Text("　導入後の平均 ${formatMinutes(after.map { it.second }.average().toLong())}（${after.size}回）",
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    HorizontalDivider()
 }
 
 @Composable

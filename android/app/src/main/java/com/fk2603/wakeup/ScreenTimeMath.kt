@@ -80,6 +80,21 @@ object ScreenTimeMath {
         }
     }
 
+    /**
+     * 曜日ごとに日付を並べる（導入日と今日は除く）。
+     * 戻り値: 曜日 → (導入前の日付と値, 導入後の日付と値)。どちらも日付の古い順
+     */
+    fun groupByWeekday(
+        daily: Map<LocalDate, Long>,
+        installDay: LocalDate,
+        today: LocalDate,
+    ): Map<DayOfWeek, Pair<List<Pair<LocalDate, Long>>, List<Pair<LocalDate, Long>>>> =
+        DayOfWeek.values().associateWith { dow ->
+            val days = daily.entries.filter { it.key.dayOfWeek == dow && it.key != installDay && it.key.isBefore(today) }
+                .sortedBy { it.key }.map { it.key to it.value }
+            days.filter { it.first.isBefore(installDay) } to days.filter { it.first.isAfter(installDay) }
+        }
+
     /** 導入後の日（導入日と今日を除く） */
     fun afterDays(daily: Map<LocalDate, Long>, installDay: LocalDate, today: LocalDate): Map<LocalDate, Long> =
         daily.filterKeys { it.isAfter(installDay) && it.isBefore(today) }
