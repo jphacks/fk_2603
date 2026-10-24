@@ -35,6 +35,7 @@ object StatusHolder {
  * M5Stack と BLE でつながり（M5Link）、
  * - locked の間は全画面オーバーレイでスマホを使えなくする
  * - 新しい起床記録を Firestore に送る
+ * - 睡眠のイベントを受け取り、端末内の睡眠記録（SleepStore）に反映する
  */
 class MonitorService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -44,6 +45,7 @@ class MonitorService : Service() {
     private var uploading = false
     private var nextUploadRetryMs = 0L
     private var uploadBackoffMs = UPLOAD_RETRY_MIN_MS
+    private var acking = false
 
     // 画面ロックを解除した瞬間にロック画面を出す（1秒ごとの判定を待たない）
     private val screenReceiver = object : BroadcastReceiver() {
@@ -85,6 +87,7 @@ class MonitorService : Service() {
     private suspend fun lockLoop() {
         while (scope.isActive) {
             StatusHolder.status.value?.lastResult?.let { uploadIfNew(it) }
+            StatusHolder.status.value?.sleepEvent?.let { receiveSleepEvent(it) }
             evaluateLock()
             delay(LOCK_CHECK_INTERVAL_MS)
         }
@@ -106,6 +109,27 @@ class MonitorService : Service() {
             overlay.show(s)
         } else {
             overlay.hide()
+        }
+    }
+
+    // 睡眠イベントを端末に保存してから M5Stack に受け取ったと知らせる（届かなければ次の状態でもう一度）
+    private fun receiveSleepEvent(event: SleepEvent) {
+        if (acking) return
+        try {
+            SleepStore.apply(this, event)
+        } catch (e: Exception) {
+            Log.w(TAG, "save sleep event failed: ${e.message}")
+            return  // 保存できなければ受け取ったことにしない（M5Stack が送り直す）
+        }
+        acking = true
+        scope.launch {
+            try {
+                M5Link.ackSleepEvent(event.id)
+            } catch (e: Exception) {
+                Log.w(TAG, "evack failed: ${e.message}")
+            } finally {
+                acking = false
+            }
         }
     }
 

@@ -3,7 +3,7 @@ package com.fk2603.wakeup
 /**
  * アプリ側の設定値（ここを変更して調整する）
  *
- * 起床判定・二度寝監視の時間（WAKE_CONFIRM_SEC, RESLEEP_WINDOW_SEC など）は
+ * 起床判定・二度寝監視・睡眠継続の時間（WAKE_CONFIRM_SEC, RESLEEP_WINDOW_SEC, SESSION_GAP_SEC など）は
  * M5Stack 側 arduino/wakeup_alarm/wakeup_alarm.ino の上部で設定する。
  */
 object Config {

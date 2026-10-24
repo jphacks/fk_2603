@@ -51,4 +51,5 @@ service cloud.firestore {
 - Firestore への送信に失敗したら、1分から最大30分まで間隔を空けて再送する
 - 初回は「電池の最適化を無効にする」を許可する（OPPO などで画面オフ中に監視が止まらないように）
 - 新しい起床記録を検出すると、Firestore の `records` コレクションに送信する
+- 睡眠記録は CSV ファイル `Android/data/com.fk2603.wakeup/files/sleep_records.csv` に保存する（`SleepStore`。Firestore には送らない）。PC から USB や `adb pull /sdcard/Android/data/com.fk2603.wakeup/files/sleep_records.csv` で取り出せる。列は `就寝,起床,睡眠時間(分),二度寝回数,ベッドに戻った時刻`（起床が空欄 = 記録中、`不明` = 起床が届かなかった、戻った時刻は `;` 区切り）。ファイルを書き換えて戻すと、記録画面の「更新」で読み直す。M5Stack から届く就寝（S）・二度寝（R）・起床（E）のイベントで組み立て、受け取るたびに `evack` を返す
 - 端末を再起動しても `BootReceiver` が監視を再開する

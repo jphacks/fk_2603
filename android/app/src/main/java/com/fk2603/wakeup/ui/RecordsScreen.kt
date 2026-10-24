@@ -1,6 +1,7 @@
 package com.fk2603.wakeup.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,16 +19,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.fk2603.wakeup.Record
 import com.fk2603.wakeup.RecordRepository
+import com.fk2603.wakeup.SleepStore
 import kotlinx.coroutines.launch
 
 @Composable
@@ -35,11 +39,14 @@ fun RecordsScreen() {
     val scope = rememberCoroutineScope()
     var ranking by remember { mutableStateOf<List<Record>>(emptyList()) }
     var mine by remember { mutableStateOf<List<Record>>(emptyList()) }
+    val context = LocalContext.current
+    val sleeps by SleepStore.records.collectAsState()
     var message by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var reloadKey by remember { mutableStateOf(0) }
 
     LaunchedEffect(reloadKey) {
+        SleepStore.load(context)  // ファイルが書き換えられていれば読み直す
         message = try {
             ranking = RecordRepository.ranking()
             mine = RecordRepository.myRecords()
@@ -62,6 +69,17 @@ fun RecordsScreen() {
                 ) { Text("自分の記録をすべて削除") }
             }
             message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+
+        item { SectionTitle("睡眠記録") }
+        if (sleeps.isEmpty()) item { Text("まだ記録がありません") }
+        items(sleeps) { s ->
+            Column {
+                Text(formatSleep(s))
+                formatReturns(s.returnsAt)?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
 
         item { SectionTitle("ランキング（起きるまでが速い順）") }
@@ -93,7 +111,8 @@ fun RecordsScreen() {
                     confirmDelete = false
                     scope.launch {
                         message = try {
-                            "${RecordRepository.deleteAllMine()} 件削除しました"
+                            val sleepCount = SleepStore.clear(context)
+                            "${RecordRepository.deleteAllMine()} 件・睡眠記録 $sleepCount 件を削除しました"
                         } catch (e: Exception) {
                             "削除に失敗しました: ${e.message}"
                         }

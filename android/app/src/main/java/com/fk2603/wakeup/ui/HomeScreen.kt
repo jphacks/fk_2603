@@ -38,6 +38,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import com.fk2603.wakeup.M5Exception
 import com.fk2603.wakeup.M5Link
 import com.fk2603.wakeup.Prefs
+import com.fk2603.wakeup.SleepStore
 import com.fk2603.wakeup.StatusHolder
 import kotlinx.coroutines.launch
 import java.time.LocalTime
@@ -50,6 +51,9 @@ fun HomeScreen(prefs: Prefs) {
     val scope = rememberCoroutineScope()
     val status by StatusHolder.status.collectAsState()
     val error by StatusHolder.error.collectAsState()
+    val sleeps by SleepStore.records.collectAsState()
+    val latestSleep = sleeps.firstOrNull()
+    remember { SleepStore.load(context) }
 
     var nickname by remember { mutableStateOf(prefs.nickname) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -133,6 +137,7 @@ fun HomeScreen(prefs: Prefs) {
                     s.lastResult?.let {
                         Text("前回: ${formatDuration(it.durationSec)}で起床${if (it.resleep) "（二度寝後）" else ""}")
                     }
+                    latestSleep?.let { Text("睡眠: ${formatSleep(it)}") }
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 }
             }

@@ -45,7 +45,10 @@ const int FSR_SAMPLES = 8;            // 平均を取るサンプル数
 // --- 時間設定（秒）---
 const uint32_t WAKE_CONFIRM_SEC = 10;            // 圧力なしがこの秒数続いたら「起床」（音はベッドを出た瞬間に止まる）
 const uint32_t BED_WAIT_SEC = 10 * 60;           // アラーム時刻にベッドにいなければ、この時間内にベッドに入ったら鳴らす
-const uint32_t RESLEEP_WINDOW_SEC = 10 * 60;     // 起床後この時間内にベッドに戻ったら二度寝扱い
+const uint32_t SESSION_GAP_SEC = 20 * 60;        // ベッドを出てこの時間内に戻れば同じ睡眠が続いているとみなす
+const uint32_t SLEEP_START_CONFIRM_SEC = 20 * 60; // 圧力ありがこの秒数続いたら睡眠開始（開始時刻はベッドに入った瞬間）
+const uint32_t SENSOR_NOISE_SEC = 10;            // 在床中にこの秒数未満だけ圧力が消えても、センサーの誤差として連続扱い
+const uint32_t RESLEEP_WINDOW_SEC = SESSION_GAP_SEC; // 起床後この時間内にベッドに戻ったら二度寝扱い
 const uint32_t RESLEEP_DETECT_SEC = 60;          // 圧力ありがこの秒数続いたら「二度寝」（寝返りなどの誤検出防止）
 const uint32_t RESLEEP_ALARM_DELAY_SEC = 5 * 60; // ベッドに戻ってからアラームを鳴らすまで
 // アラームはベッドにいる間だけ鳴る（ベッドを出ると止まり、戻るとまた鳴る。C ボタンはベッドの外でのみ有効）
@@ -103,6 +106,25 @@ struct WakeResult {
   bool resleep = false;
 };
 
+// 睡眠（ベッドに入ってから、SESSION_GAP_SEC 以上ベッドを離れるまで）。記録の管理はアプリが行う
+struct SleepSession {
+  bool active = false;
+  time_t startAt = 0;
+  time_t endAt = 0;  // 最後にベッドを出た時刻 = 起床時刻
+  uint8_t resleepCount = 0;  // アラーム後にベッドに戻った回数
+};
+
+// アプリへ送る睡眠のイベント。アプリから evack が届くまで送り続ける
+const char EVENT_SLEEP = 'S';    // 就寝（at = ベッドに入った時刻）
+const char EVENT_RETURN = 'R';   // 二度寝（at = ベッドに戻った時刻）
+const char EVENT_WAKE = 'E';     // 起床（at = 最後にベッドを出た時刻）
+const int EVENT_QUEUE_SIZE = 16; // スマホとつながっていない間にためておける数（あふれたら古いものから捨てる）
+struct SleepEvent {
+  uint32_t id;
+  char type;
+  time_t at;
+};
+
 State state = IDLE;
 int volumeLevel = VOLUME_DEFAULT;
 time_t alarmEpoch = 0;    // 0 = 未セット（ユーザーが設定したアラーム）
@@ -119,6 +141,16 @@ uint32_t lastBeepMs = 0;
 uint32_t awakeEnteredMs = 0;
 WakeResult lastResult;
 uint32_t resultCounter = 0;
+
+// 睡眠
+SleepSession curSession;   // 記録中
+SleepSession lastSession;  // 最後に確定したもの（LCD 表示用）
+SleepEvent eventQueue[EVENT_QUEUE_SIZE];
+int eventHead = 0;  // いちばん古い未送信のイベント
+int eventCount = 0;
+uint32_t eventCounter = 0;
+bool bedStreak = false;         // ベッドにいる（短い途切れを除く）
+uint32_t bedStreakStartMs = 0;  // その開始
 
 // 圧力
 int pressureRaw = 0;
@@ -223,6 +255,84 @@ void finishRinging() {
   setState(AWAKE);
 }
 
+// ------------------------------------------------------------
+// 睡眠の記録（アラームとは関係なく、ベッドの在否だけで判定する）
+// ------------------------------------------------------------
+
+// millis() の値を時刻に直す
+time_t msToEpoch(uint32_t ms) {
+  return time(nullptr) - (time_t)((millis() - ms) / 1000);
+}
+
+// ベッドの在否が最後に変わった時刻
+time_t bedChangedEpoch() {
+  return msToEpoch(bedChangedMs);
+}
+
+void pushEvent(char type, time_t at) {
+  if (eventCount == EVENT_QUEUE_SIZE) {
+    Serial.println("[EVENT] queue full, dropped oldest");
+    eventHead = (eventHead + 1) % EVENT_QUEUE_SIZE;
+    eventCount--;
+  }
+  SleepEvent& e = eventQueue[(eventHead + eventCount) % EVENT_QUEUE_SIZE];
+  e.id = ++eventCounter;
+  e.type = type;
+  e.at = at;
+  eventCount++;
+  Serial.printf("[EVENT] id=%u %c %s\n", e.id, type, fmtTime(at).c_str());
+}
+
+// アプリが受け取ったイベントを消す
+void ackEvent(uint32_t id) {
+  if (eventCount > 0 && eventQueue[eventHead].id == id) {
+    eventHead = (eventHead + 1) % EVENT_QUEUE_SIZE;
+    eventCount--;
+  }
+}
+
+void startSession(time_t at) {
+  curSession = SleepSession();
+  curSession.active = true;
+  curSession.startAt = at;
+  pushEvent(EVENT_SLEEP, at);
+}
+
+void updateSession() {
+  // ベッドにいる連続時間。SENSOR_NOISE_SEC 未満の途切れはセンサーの誤差として無視する
+  if (inBed) {
+    if (!bedStreak) {
+      bedStreak = true;
+      bedStreakStartMs = bedChangedMs;
+    }
+  } else if (bedStreak && secSinceBedChange() >= SENSOR_NOISE_SEC) {
+    bedStreak = false;
+  }
+
+  if (!curSession.active) {
+    // SLEEP_START_CONFIRM_SEC 続いたら睡眠とみなし、ベッドに入った時刻までさかのぼって開始する
+    if (bedStreak && timeIsSet() && (millis() - bedStreakStartMs) / 1000 >= SLEEP_START_CONFIRM_SEC) {
+      startSession(msToEpoch(bedStreakStartMs));
+    }
+    return;
+  }
+  // SESSION_GAP_SEC 以内に戻れば続いているので何もしない
+  if (!inBed && secSinceBedChange() >= SESSION_GAP_SEC) {
+    curSession.endAt = bedChangedEpoch();
+    lastSession = curSession;
+    curSession = SleepSession();
+    pushEvent(EVENT_WAKE, lastSession.endAt);
+  }
+}
+
+// アラーム後にベッドに戻った（二度寝）
+// 記録中の睡眠がなければ（アラーム前の在床が SLEEP_START_CONFIRM_SEC 未満だった）、戻った時刻から記録を始める
+void onReturnToBed(time_t at) {
+  if (!curSession.active) startSession(at);
+  curSession.resleepCount++;
+  pushEvent(EVENT_RETURN, at);
+}
+
 void leaveAwake() {
   setState(alarmEpoch > 0 ? ARMED : IDLE);
 }
@@ -281,6 +391,7 @@ void updateState() {
         onAlarmDue();
       } else if (returnedInWindow && secSinceBedChange() >= RESLEEP_DETECT_SEC) {
         // 鳴らすのは「ベッドに戻ってから」RESLEEP_ALARM_DELAY_SEC 後
+        onReturnToBed(epoch - secSinceBedChange());
         resleepEpoch = epoch - secSinceBedChange() + RESLEEP_ALARM_DELAY_SEC;
         Serial.printf("[RESLEEP] detected, alarm at %s\n", fmtTime(resleepEpoch).c_str());
         setState(RESLEEP_ARMED);
@@ -385,6 +496,14 @@ void drawScreen() {
   } else {
     d.printf("%-26s\n", "Last  : -");
   }
+  if (curSession.active) {
+    d.printf("Sleep : %.5s-       x%-4u\n", fmtTime(curSession.startAt).c_str(), curSession.resleepCount);
+  } else if (lastSession.startAt > 0) {
+    d.printf("Sleep : %.5s-%.5s x%-4u\n", fmtTime(lastSession.startAt).c_str(),
+             fmtTime(lastSession.endAt).c_str(), lastSession.resleepCount);
+  } else {
+    d.printf("%-26s\n", "Sleep : -");
+  }
   d.printf("BLE   : %-18s\n", bleConnected ? "connected" : "waiting");
 
   // 音量（大きく表示）
@@ -412,12 +531,14 @@ void drawScreen() {
 //     {"cmd":"time","epoch":<unix秒>}            時刻を合わせる
 //     {"seq":n,"cmd":"set","epoch":<unix秒>}     アラームをセット
 //     {"seq":n,"cmd":"cancel"}                   アラームを解除
+//     {"cmd":"evack","id":n}                     睡眠イベント n を受け取った（次のイベントを送る）
 //   seq 付きのコマンドの結果は、状態 JSON の ack に入る
 // ------------------------------------------------------------
 
 // 状態 JSON は notify 1回（MTU 247 なら 244 バイト）に収まるよう短いキーにする
 //   s=状態 l=ロック a=次に鳴る時刻 v=音量 t=現在時刻 r=raw b=ベッドにいる
 //   w=[id, ringAt, awakeAt, durationSec, resleep]（記録なしは null） k=[seq, error]
+//   e=[id, 種類(S=就寝 R=二度寝 E=起床), 時刻]（未送信でいちばん古い睡眠イベント。なしは null）
 String buildStatusJson() {
   JsonDocument doc;
   doc["s"] = stateName(state);
@@ -437,6 +558,16 @@ String buildStatusJson() {
   } else {
     doc["w"] = nullptr;
   }
+  if (eventCount > 0) {
+    const SleepEvent& ev = eventQueue[eventHead];
+    char type[2] = {ev.type, '\0'};
+    JsonArray e = doc["e"].to<JsonArray>();
+    e.add(ev.id);
+    e.add(type);
+    e.add((long)ev.at);
+  } else {
+    doc["e"] = nullptr;
+  }
   JsonArray k = doc["k"].to<JsonArray>();
   k.add(ackSeq);
   k.add(ackError);
@@ -447,6 +578,7 @@ String buildStatusJson() {
 
 void notifyStatus() {
   String body = buildStatusJson();
+  if (body.length() > 244) Serial.printf("[BLE] status too long: %u bytes\n", body.length());
   statusChar->setValue(body);
   if (bleConnected) statusChar->notify();
   lastNotifyMs = millis();
@@ -484,6 +616,8 @@ void handleCommand(const char* text) {
     applyPhoneTime(req["epoch"].as<long>());
   } else if (strcmp(cmd, "set") == 0) {
     err = doSetAlarm(req["epoch"].as<long>());
+  } else if (strcmp(cmd, "evack") == 0) {
+    ackEvent(req["id"].as<uint32_t>());
   } else if (strcmp(cmd, "cancel") == 0) {
     err = doCancelAlarm();
   } else {
@@ -571,6 +705,7 @@ void loop() {
   readPressure();
   handleButtons();
   updateState();
+  updateSession();
 
   uint32_t now = millis();
   if (now - lastNotifyMs >= STATUS_NOTIFY_MS) notifyStatus();

@@ -46,6 +46,13 @@ data class WakeResult(
     val resleep: Boolean,
 )
 
+/** M5Stack から届く睡眠のイベント。受け取ったら ackSleepEvent() で知らせる */
+data class SleepEvent(
+    val id: Long,
+    val type: Char, // S=就寝 R=二度寝（ベッドに戻った） E=起床
+    val at: Long,
+)
+
 data class M5Status(
     val state: String,
     val locked: Boolean,
@@ -55,6 +62,7 @@ data class M5Status(
     val pressureRaw: Int,
     val inBed: Boolean,
     val lastResult: WakeResult?,
+    val sleepEvent: SleepEvent?,
     val ackSeq: Int,
     val ackError: String,
 )
@@ -106,6 +114,11 @@ object M5Link {
         command(JSONObject().put("cmd", "set").put("epoch", epochSec))
 
     suspend fun cancelAlarm(): M5Status = command(JSONObject().put("cmd", "cancel"))
+
+    /** 睡眠イベントを受け取ったと知らせる（M5Stack は次のイベントを送る） */
+    suspend fun ackSleepEvent(id: Long) {
+        write(JSONObject().put("cmd", "evack").put("id", id).toString())
+    }
 
     private suspend fun command(json: JSONObject): M5Status {
         val s = seq.incrementAndGet()
@@ -328,6 +341,9 @@ object M5Link {
                     durationSec = it.getLong(3),
                     resleep = it.getInt(4) != 0,
                 )
+            },
+            sleepEvent = j.optJSONArray("e")?.let {
+                SleepEvent(id = it.getLong(0), type = it.getString(1)[0], at = it.getLong(2))
             },
             ackSeq = k?.optInt(0) ?: 0,
             ackError = k?.optString(1).orEmpty(),
