@@ -43,6 +43,8 @@ class MonitorService : Service() {
 
     private var uploading = false
     private var syncingUserStats = false
+    @Volatile private var snapshotting = false
+    private lateinit var screenTimeStore: ScreenTimeStore
     private var nextUploadRetryMs = 0L
     private var uploadBackoffMs = UPLOAD_RETRY_MIN_MS
 
@@ -57,6 +59,7 @@ class MonitorService : Service() {
         super.onCreate()
         prefs = Prefs(this)
         overlay = LockOverlay(this) { triggerEmergency() }
+        screenTimeStore = ScreenTimeStore(this)
         EmergencyUnlock.ensureFirstDay(prefs)
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(),
@@ -89,6 +92,7 @@ class MonitorService : Service() {
             StatusHolder.status.value?.lastResult?.let { uploadIfNew(it) }
             evaluateLock()
             syncUserStatsIfDue()
+            snapshotScreenTimeIfDue()
             delay(LOCK_CHECK_INTERVAL_MS)
         }
     }
@@ -138,6 +142,22 @@ class MonitorService : Service() {
                 Log.w(TAG, "user stats sync failed: ${e.message}")
             } finally {
                 syncingUserStats = false
+            }
+        }
+    }
+
+    // Android の日ごとの利用記録は数日で消えるので、1時間ごとに端末内へ写しておく（分析タブ用）
+    private fun snapshotScreenTimeIfDue() {
+        if (snapshotting) return
+        if (System.currentTimeMillis() - screenTimeStore.lastSnapshotMs < ScreenTime.SNAPSHOT_INTERVAL_MS) return
+        snapshotting = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                ScreenTime.snapshot(this@MonitorService, screenTimeStore)
+            } catch (e: Exception) {
+                Log.w(TAG, "screen time snapshot failed: ${e.message}")
+            } finally {
+                snapshotting = false
             }
         }
     }

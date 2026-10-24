@@ -22,6 +22,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.fk2603.wakeup.ui.HomeScreen
 import com.fk2603.wakeup.ui.RecordsScreen
+import com.fk2603.wakeup.ui.ScreenTimeScreen
 
 class MainActivity : ComponentActivity() {
     private val permissionRequest =
@@ -47,10 +48,12 @@ class MainActivity : ComponentActivity() {
                         TabRow(selectedTabIndex = tab) {
                             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("アラーム") })
                             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("記録・ランキング") })
+                            Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text("分析") })
                         }
                         when (tab) {
                             0 -> HomeScreen(prefs)
                             1 -> RecordsScreen()
+                            2 -> ScreenTimeScreen()
                         }
                     }
                 }
