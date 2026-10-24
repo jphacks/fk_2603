@@ -33,4 +33,19 @@ object Config {
 
     /** Firestore のコレクション名 */
     const val RECORDS_COLLECTION = "records"
+
+    /** 緊急解除・連続記録（ユーザーごとに1件） */
+    const val USERS_COLLECTION = "users"
+
+    /** 緊急解除でロックを外す時間 */
+    const val EMERGENCY_UNLOCK_SEC = 5 * 60L
+
+    /** 緊急解除ボタンは、押してからこの時間内にもう一度押すと解除（誤タップ防止） */
+    const val EMERGENCY_CONFIRM_MS = 5_000L
+
+    /** 1日の区切り（時）。夜中の緊急解除を「前の晩」として数えるため朝4時にする */
+    const val DAY_START_HOUR = 4
+
+    /** 緊急解除の記録を Firestore と同期する間隔（変更があればすぐ送る） */
+    const val USER_STATS_SYNC_INTERVAL_MS = 60 * 60_000L
 }

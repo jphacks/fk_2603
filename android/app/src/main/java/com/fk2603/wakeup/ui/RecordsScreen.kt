@@ -28,6 +28,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.fk2603.wakeup.Record
 import com.fk2603.wakeup.RecordRepository
+import com.fk2603.wakeup.UserStats
+import com.fk2603.wakeup.UserStatsRepository
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.launch
 
 @Composable
@@ -35,6 +38,7 @@ fun RecordsScreen() {
     val scope = rememberCoroutineScope()
     var ranking by remember { mutableStateOf<List<Record>>(emptyList()) }
     var mine by remember { mutableStateOf<List<Record>>(emptyList()) }
+    var users by remember { mutableStateOf<List<UserStats>>(emptyList()) }
     var message by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var reloadKey by remember { mutableStateOf(0) }
@@ -43,6 +47,7 @@ fun RecordsScreen() {
         message = try {
             ranking = RecordRepository.ranking()
             mine = RecordRepository.myRecords()
+            users = UserStatsRepository.all()
             null
         } catch (e: Exception) {
             "読み込みに失敗しました: ${e.message}"
@@ -62,6 +67,20 @@ fun RecordsScreen() {
                 ) { Text("自分の記録をすべて削除") }
             }
             message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        }
+
+        val me = FirebaseAuth.getInstance().currentUser?.uid
+        item { SectionTitle("🔥 連続記録（緊急解除なしの日数）") }
+        if (users.isEmpty()) item { Text("まだ記録がありません") }
+        itemsIndexed(users.sortedWith(compareByDescending<UserStats> { it.streak }.thenBy { it.unlockCount })
+            .take(20)) { i, u ->
+            UserRow(i, u, me, "${u.streak}日（最高${u.bestStreak}日）")
+        }
+
+        item { SectionTitle("緊急解除が少ない順") }
+        itemsIndexed(users.sortedWith(compareBy<UserStats> { it.unlockCount }.thenByDescending { it.streak })
+            .take(20)) { i, u ->
+            UserRow(i, u, me, "${u.unlockCount}回")
         }
 
         item { SectionTitle("ランキング（起きるまでが速い順）") }
@@ -110,4 +129,13 @@ fun RecordsScreen() {
 private fun SectionTitle(text: String) {
     Text(text, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
     HorizontalDivider()
+}
+
+@Composable
+private fun UserRow(i: Int, u: UserStats, me: String?, value: String) {
+    val name = u.nickname.ifBlank { "名無し" } + if (u.uid == me) "（自分）" else ""
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text("${i + 1}. $name", fontWeight = if (u.uid == me || i < 3) FontWeight.Bold else null)
+        Text(value)
+    }
 }

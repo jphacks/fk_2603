@@ -20,7 +20,7 @@ object RecordRepository {
     private val auth get() = FirebaseAuth.getInstance()
     private val records get() = FirebaseFirestore.getInstance().collection(Config.RECORDS_COLLECTION)
 
-    private suspend fun uid(): String =
+    internal suspend fun uid(): String =
         auth.currentUser?.uid ?: auth.signInAnonymously().await().user!!.uid
 
     suspend fun upload(result: WakeResult, nickname: String) {

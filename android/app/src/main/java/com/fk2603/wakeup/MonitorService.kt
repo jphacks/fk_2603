@@ -42,6 +42,7 @@ class MonitorService : Service() {
     private lateinit var overlay: LockOverlay
 
     private var uploading = false
+    private var syncingUserStats = false
     private var nextUploadRetryMs = 0L
     private var uploadBackoffMs = UPLOAD_RETRY_MIN_MS
 
@@ -55,7 +56,8 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
-        overlay = LockOverlay(this)
+        overlay = LockOverlay(this) { triggerEmergency() }
+        EmergencyUnlock.ensureFirstDay(prefs)
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -86,6 +88,7 @@ class MonitorService : Service() {
         while (scope.isActive) {
             StatusHolder.status.value?.lastResult?.let { uploadIfNew(it) }
             evaluateLock()
+            syncUserStatsIfDue()
             delay(LOCK_CHECK_INTERVAL_MS)
         }
     }
@@ -102,10 +105,40 @@ class MonitorService : Service() {
         val alarmPassedWhileAway = s != null && s.state in ALARM_PENDING_STATES && alarmMs > 0 &&
             lastStatusMs < alarmMs && now >= alarmMs && now - alarmMs < unlockAfterMs
 
-        if ((lockedByM5 || alarmPassedWhileAway) && Settings.canDrawOverlays(this)) {
-            overlay.show(s)
+        // 緊急解除中はロックしない（アラームは M5Stack 側で鳴り続ける）
+        val emergency = EmergencyUnlock.isActive(prefs, now)
+
+        if ((lockedByM5 || alarmPassedWhileAway) && !emergency && Settings.canDrawOverlays(this)) {
+            overlay.show(s, EmergencyUnlock.streak(prefs))
         } else {
             overlay.hide()
+        }
+    }
+
+    private fun triggerEmergency() {
+        EmergencyUnlock.trigger(prefs)
+        Log.i(TAG, "emergency unlock #${prefs.unlockCount}")
+        evaluateLock()
+        prefs.lastUserStatsSyncMs = 0 // すぐ送る
+    }
+
+    // 緊急解除の回数・連続記録を Firestore に送る（変更があったときと、1時間ごと）
+    private fun syncUserStatsIfDue() {
+        if (syncingUserStats) return
+        val now = System.currentTimeMillis()
+        val due = now - prefs.lastUserStatsSyncMs >= Config.USER_STATS_SYNC_INTERVAL_MS
+        if (!due && !(prefs.userStatsDirty && now - prefs.lastUserStatsSyncMs >= UPLOAD_RETRY_MIN_MS)) return
+        syncingUserStats = true
+        prefs.lastUserStatsSyncMs = now
+        scope.launch {
+            try {
+                UserStatsRepository.upload(prefs)
+                prefs.userStatsDirty = false
+            } catch (e: Exception) {
+                Log.w(TAG, "user stats sync failed: ${e.message}")
+            } finally {
+                syncingUserStats = false
+            }
         }
     }
 

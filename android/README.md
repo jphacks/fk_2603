@@ -17,6 +17,11 @@ service cloud.firestore {
       allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
       allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
     }
+    // 緊急解除の回数・連続記録（ユーザーごとに1件、本人だけが書ける）
+    match /users/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
   }
 }
 ```
@@ -37,6 +42,9 @@ service cloud.firestore {
 | `TIME_SYNC_INTERVAL_MS` | 240000 | スマホの時刻を M5Stack に送る間隔（4分） |
 | `UNLOCK_IF_UNREACHABLE_SEC` | 300 | ロック中に M5Stack と通信できない状態がこの時間続いたらロックを解除 |
 | `RANKING_LIMIT` | 50 | ランキングの表示件数 |
+| `EMERGENCY_UNLOCK_SEC` | 300 | 緊急解除でロックを外す時間（5分） |
+| `EMERGENCY_CONFIRM_MS` | 5000 | 緊急解除ボタンの2回目をこの時間内に押すと解除 |
+| `DAY_START_HOUR` | 4 | 連続記録の1日の区切り（朝4時） |
 
 ## ビルド
 
@@ -52,3 +60,18 @@ service cloud.firestore {
 - 初回は「電池の最適化を無効にする」を許可する（OPPO などで画面オフ中に監視が止まらないように）
 - 新しい起床記録を検出すると、Firestore の `records` コレクションに送信する
 - 端末を再起動しても `BootReceiver` が監視を再開する
+
+## 緊急解除と連続記録
+
+- ロック画面の「緊急解除」を2回押すと、`EMERGENCY_UNLOCK_SEC`（5分）だけロックを外す。アラームは止まらない（M5Stack 側で鳴り続ける）
+- ボタンを1回押すと「〇日の連続記録が0に戻ります」と表示して確認する
+- 緊急解除しなかった日の連続日数を記録する。1日の区切りは朝4時（夜中の解除は「前の晩」として数える）。今日はまだ終わっていないので、昨日までの日数を数える
+- 3・7・14・30・50・100・200・365日に達するとお祝いを表示する
+- 回数・最終解除日・使い始めた日を Firestore の `users/{uid}` に1件で保存する。連続日数は日付から読む側で計算するので、毎日更新しなくても正しい
+- 「記録・ランキング」タブで、連続記録が長い順・緊急解除が少ない順に他のユーザーと比べられる
+
+| ファイル | 内容 |
+|---|---|
+| `StreakMath.kt` | 連続日数の計算（Android に依存しない） |
+| `EmergencyUnlock.kt` | 緊急解除の実行と状態 |
+| `UserStatsRepository.kt` | Firestore への保存とランキング用の読み込み |

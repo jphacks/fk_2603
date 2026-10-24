@@ -35,8 +35,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import com.fk2603.wakeup.EmergencyUnlock
 import com.fk2603.wakeup.M5Exception
+import com.fk2603.wakeup.StreakMath
 import com.fk2603.wakeup.M5Link
+import com.fk2603.wakeup.Config
 import com.fk2603.wakeup.Prefs
 import com.fk2603.wakeup.StatusHolder
 import kotlinx.coroutines.launch
@@ -57,9 +60,18 @@ fun HomeScreen(prefs: Prefs) {
     val power = remember { context.getSystemService(PowerManager::class.java) }
     var canOverlay by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var ignoringBattery by remember { mutableStateOf(power.isIgnoringBatteryOptimizations(context.packageName)) }
+    var streak by remember { mutableStateOf(EmergencyUnlock.streak(prefs)) }
+    var celebrate by remember { mutableStateOf(0) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
         canOverlay = Settings.canDrawOverlays(context)
         ignoringBattery = power.isIgnoringBatteryOptimizations(context.packageName)
+        streak = EmergencyUnlock.streak(prefs)
+        // 節目の日数に届いたら1回だけお祝いする
+        val milestone = StreakMath.reachedMilestone(streak)
+        if (milestone > prefs.celebratedStreak) {
+            prefs.celebratedStreak = milestone
+            celebrate = streak
+        }
     }
 
     fun call(block: suspend () -> String) {
@@ -138,6 +150,8 @@ fun HomeScreen(prefs: Prefs) {
             }
         }
 
+        StreakCard(prefs, streak, status?.now)
+
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { showPicker = true }) { Text("アラームをセット") }
             OutlinedButton(onClick = {
@@ -155,6 +169,15 @@ fun HomeScreen(prefs: Prefs) {
             prefs.nickname = nickname
             message = "保存しました"
         }) { Text("保存") }
+    }
+
+    if (celebrate > 0) {
+        AlertDialog(
+            onDismissRequest = { celebrate = 0 },
+            title = { Text("🔥 ${celebrate}日連続！") },
+            text = { Text("${celebrate}日間、緊急解除なしでベッドを抜け出せています。この調子！") },
+            confirmButton = { TextButton(onClick = { celebrate = 0 }) { Text("やったー") } },
+        )
     }
 
     if (showPicker) {
@@ -179,5 +202,29 @@ fun HomeScreen(prefs: Prefs) {
             },
             dismissButton = { TextButton(onClick = { showPicker = false }) { Text("キャンセル") } },
         )
+    }
+}
+
+/** 「緊急解除しなかった日」の連続記録 */
+@Composable
+private fun StreakCard(prefs: Prefs, streak: Int, @Suppress("UNUSED_PARAMETER") tick: Long?) {
+    // tick: M5Stack の状態が1秒ごとに届くたびに再表示して、緊急解除の残り時間を進める
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                if (streak > 0) "🔥 ${streak}日連続" else "🔥 0日",
+                style = MaterialTheme.typography.headlineMedium,
+            )
+            Text("緊急解除なしで過ごせた日数（1日の区切りは朝${Config.DAY_START_HOUR}時）")
+            val next = StreakMath.MILESTONES.firstOrNull { it > streak }
+            if (next != null) Text("次の節目まであと${next - streak}日")
+            Text("最高記録 ${EmergencyUnlock.bestStreak(prefs)}日 ／ 緊急解除 ${prefs.unlockCount}回")
+            if (EmergencyUnlock.isActive(prefs)) {
+                Text(
+                    "緊急解除中：あと${formatDuration(EmergencyUnlock.remainingSec(prefs))}",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
     }
 }
