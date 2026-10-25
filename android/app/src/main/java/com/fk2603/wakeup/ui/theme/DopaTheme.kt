@@ -1,8 +1,10 @@
 package com.fk2603.wakeup.ui.theme
 
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -43,6 +45,8 @@ fun DopaTheme(content: @Composable () -> Unit) {
             outline = Dopa.Border,
             error = Dopa.Alert,
         ),
-        content = content,
-    )
+    ) {
+        // 色を指定していない文字・アイコンの既定は黒なので、黒背景で見えるよう白にする
+        CompositionLocalProvider(LocalContentColor provides Dopa.Foreground, content = content)
+    }
 }

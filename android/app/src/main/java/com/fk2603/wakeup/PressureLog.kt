@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.io.File
 
 /** 1分ごとの圧力（raw の平均） */
 data class PressureSample(val at: Long, val raw: Int)
@@ -12,11 +11,11 @@ data class PressureSample(val at: Long, val raw: Int)
 /**
  * 圧力センサーの値を直近 8 時間ぶん残す（デバイス画面のグラフ用）
  * MonitorService が M5Stack から届くたびに add() し、1分ごとに平均して1点にする。
- * アプリが終了しても残るよう filesDir/pressure_log.csv に保存する
+ * アプリが終了しても残るよう CSV ファイル pressure_log.csv（CsvFile の形式。列: 時刻,raw）に保存する
  */
 object PressureLog {
     private const val TAG = "PressureLog"
-    private const val FILE_NAME = "pressure_log.csv"
+    private val csv = CsvFile("pressure_log.csv", "時刻,raw")
     private const val BUCKET_SEC = 60L
     const val WINDOW_SEC = 8 * 3600L
 
@@ -32,12 +31,9 @@ object PressureLog {
     fun load(context: Context) {
         if (loaded) return
         loaded = true
-        val f = file(context)
-        if (!f.exists()) return
         _samples.value = runCatching {
-            f.readLines().mapNotNull { line ->
-                val c = line.split(",")
-                if (c.size == 2) PressureSample(c[0].toLong(), c[1].toInt()) else null
+            csv.read(context).mapNotNull { c ->
+                runCatching { PressureSample(CsvFile.parseTime(c[0]), c[1].toInt()) }.getOrNull()
             }
         }.getOrElse {
             Log.w(TAG, "read failed: $it")
@@ -65,11 +61,9 @@ object PressureLog {
         val list = (_samples.value + sample).filter { it.at > sample.at - WINDOW_SEC }
         _samples.value = list
         try {
-            file(context).writeText(list.joinToString("") { "${it.at},${it.raw}\n" })
+            csv.write(context, list.map { listOf(CsvFile.formatTime(it.at), it.raw.toString()) })
         } catch (e: Exception) {
             Log.w(TAG, "write failed: $e")
         }
     }
-
-    private fun file(context: Context) = File(context.applicationContext.filesDir, FILE_NAME)
 }

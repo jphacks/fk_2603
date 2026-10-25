@@ -2,14 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <!-- ベッドにいる間、前面のアプリが SNS・動画などかを判定する（設定の「使用状況へのアクセス」で許可） -->
+    <!-- ベッドにいる間、前面のアプリが封印対象かを判定する（設定の「使用状況へのアクセス」で許可） -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
@@ -24,7 +23,7 @@
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
-    <!-- 前面のアプリの種類を調べるため、ホーム画面に並ぶアプリ・ホームアプリ・電話アプリを見えるようにする -->
+    <!-- 封印するアプリの一覧を作るため、ホーム画面に並ぶアプリ・ホームアプリ・電話アプリを見えるようにする -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -44,6 +43,11 @@
         android:icon="@drawable/ic_alarm"
         android:label="@string/app_name"
         android:theme="@style/Theme.WakeUp">
+
+        <!-- QR の読み取りモジュールをインストール時にダウンロードしておく -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode_ui" />
 
         <activity
             android:name=".MainActivity"

@@ -17,28 +17,30 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.Bed
-import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.LocalFireDepartment
+import androidx.compose.material.icons.rounded.QrCodeScanner
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fk2603.wakeup.AlarmSchedule
+import com.fk2603.wakeup.LocalAlarm
 import com.fk2603.wakeup.ui.formatEpoch
 import com.fk2603.wakeup.ui.theme.Dopa
 import java.time.Instant
@@ -50,33 +52,43 @@ fun HomeScreen(
     ui: HomeUi,
     nowSec: Long,
     onAddAlarm: () -> Unit,
-    onCancelAlarm: () -> Unit,
+    onToggleLocalAlarm: (Long, Boolean) -> Unit,
+    onDeleteLocalAlarm: (Long) -> Unit,
+    onEditRoutine: () -> Unit,
+    onToggleRoutineTask: (Long) -> Unit,
     onWarning: (SetupWarning) -> Unit,
-    onDemo: () -> Unit,
+    onAddDevice: () -> Unit = {},
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Header(ui)
-        ui.warnings.forEach { WarningCard(it) { onWarning(it) } }
-        NextMission(ui, nowSec)
-        Row(Modifier.fillMaxWidth().height(200.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        // 一度登録すれば以降は出さない
+        if (!ui.paired) AddDeviceCard(onAddDevice)
+        if (ui.warnings.isNotEmpty()) SetupBanner(ui.warnings, onWarning)
+        NextMission(ui, nowSec, onEditRoutine, onToggleRoutineTask)
+        Row(Modifier.fillMaxWidth().height(260.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             WatcherCard(ui, Modifier.weight(3f).fillMaxHeight())
             Column(Modifier.weight(2f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 BedCard(ui, Modifier.weight(1f).fillMaxWidth())
                 StreakCard(ui.streak, Modifier.weight(1f).fillMaxWidth())
             }
         }
-        DemoButton(onDemo)
-        ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 2) }
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionLabel("ALARMS") {
                 IconBadge(size = 32.dp, background = Dopa.Surface2, modifier = Modifier.clickable(enabled = !ui.alarmLocked, onClick = onAddAlarm)) {
                     Icon(Icons.Rounded.Add, "アラームをセット", tint = Dopa.Foreground, modifier = Modifier.size(16.dp))
                 }
             }
-            AlarmRow(ui, onAddAlarm, onCancelAlarm)
+            if (ui.localAlarms.isEmpty()) {
+                EmptyAlarmRow(onAddAlarm, ui.alarmLocked)
+            } else {
+                ui.localAlarms.sortedWith(compareBy({ it.hour }, { it.minute })).forEach { alarm ->
+                    LocalAlarmRow(alarm, ui.alarmLocked, onToggleLocalAlarm, onDeleteLocalAlarm)
+                }
+            }
         }
     }
 }
@@ -106,32 +118,58 @@ private fun Header(ui: HomeUi) {
     }
 }
 
+/** M5Stack が未登録のときだけ出す。タップで QR を読み取る */
 @Composable
-private fun WarningCard(w: SetupWarning, onClick: () -> Unit) {
+private fun AddDeviceCard(onAddDevice: () -> Unit) {
     val shape = RoundedCornerShape(20.dp)
-    Column(
-        Modifier.fillMaxWidth().clip(shape).background(Dopa.Alert.copy(alpha = 0.12f)).border(2.dp, Dopa.Alert, shape).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+    Row(
+        Modifier.fillMaxWidth().clip(shape).background(Dopa.Lime.copy(alpha = 0.12f)).border(2.dp, Dopa.Lime, shape)
+            .clickable(onClick = onAddDevice).padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(w.text, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Dopa.Foreground)
+        IconBadge(size = 40.dp) {
+            Icon(Icons.Rounded.QrCodeScanner, null, tint = Dopa.LimeForeground, modifier = Modifier.size(20.dp))
+        }
+        HSpace(12.dp)
+        Column(Modifier.weight(1f)) {
+            Text("デバイスを追加", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Dopa.Foreground)
+            Text(
+                "M5Stack の右ボタンを3秒長押しして、表示された QR を読み取る",
+                fontSize = 11.sp, color = Dopa.Muted,
+            )
+        }
+        HSpace(8.dp)
+        Text("読み取る", color = Dopa.Lime, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    }
+}
+
+/** 未許可の設定を1行にまとめて出す（タップで最初のものの設定画面へ） */
+@Composable
+private fun SetupBanner(warnings: List<SetupWarning>, onWarning: (SetupWarning) -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    val first = warnings.first()
+    Row(
+        Modifier.fillMaxWidth().clip(shape).background(Dopa.Alert.copy(alpha = 0.12f)).border(2.dp, Dopa.Alert, shape)
+            .clickable { onWarning(first) }.padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(
-            w.action,
-            Modifier.clip(RoundedCornerShape(12.dp)).background(Dopa.Alert).clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 8.dp),
-            color = Dopa.Foreground, fontWeight = FontWeight.Bold, fontSize = 13.sp,
+            "要設定：${first.short}" + if (warnings.size > 1) " ほか${warnings.size - 1}件" else "",
+            Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Dopa.Foreground, maxLines = 1,
         )
+        Text(first.action, color = Dopa.Alert, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     }
 }
 
 @Composable
-private fun NextMission(ui: HomeUi, nowSec: Long) {
+private fun NextMission(ui: HomeUi, nowSec: Long, onEditRoutine: () -> Unit, onToggleRoutineTask: (Long) -> Unit) {
     Column(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Dopa.Lime).padding(20.dp),
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Dopa.Lime).padding(horizontal = 20.dp, vertical = 16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Rounded.Alarm, null, tint = Dopa.LimeForeground, modifier = Modifier.size(16.dp))
             HSpace(6.dp)
-            Text("NEXT MISSION", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Dopa.LimeForeground, modifier = Modifier.weight(1f))
+            Text("NEXT MISSION", fontSize = 16.sp, fontWeight = FontWeight.Black, fontFamily = Dopa.Display, color = Dopa.LimeForeground, modifier = Modifier.weight(1f))
             ui.alarmEpoch?.let { epoch ->
                 Text(
                     remaining(epoch - nowSec),
@@ -140,16 +178,48 @@ private fun NextMission(ui: HomeUi, nowSec: Long) {
                 )
             }
         }
-        VSpace(8.dp)
-        DisplayText(ui.alarmEpoch?.let { formatEpoch(it, "HH:mm") } ?: "--:--", 76.sp, color = Dopa.LimeForeground, lineHeight = 76.sp)
+        VSpace(4.dp)
+        FitText(ui.alarmEpoch?.let { formatEpoch(it, "HH:mm") } ?: "--:--", 76.sp, color = Dopa.LimeForeground)
         Text(
             ui.alarmEpoch?.let { dayLabel(it) } ?: "アラーム未設定｜＋ からセット",
             fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Dopa.LimeForeground,
         )
-        VSpace(16.dp)
+        VSpace(14.dp)
+        HorizontalDivider(color = Dopa.LimeForeground.copy(alpha = 0.22f))
+        VSpace(12.dp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "MORNING ROUTINE", fontSize = 17.sp, fontWeight = FontWeight.Black, fontFamily = Dopa.Display,
+                color = Dopa.LimeForeground, modifier = Modifier.weight(1f),
+            )
+            Text(
+                "編集 ＋", Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onEditRoutine).padding(8.dp),
+                color = Dopa.LimeForeground, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            )
+        }
+        if (ui.routineTasks.isEmpty()) {
+            Text("タスクを追加して、朝の予定を決めよう", color = Dopa.LimeForeground.copy(alpha = 0.75f), fontSize = 12.sp)
+        } else {
+            ui.routineTasks.forEach { task ->
+                val done = task.id in ui.completedTaskIds
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { onToggleRoutineTask(task.id) }
+                        .padding(vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(if (done) "☑" else "☐", fontSize = 20.sp, color = Dopa.LimeForeground)
+                    HSpace(10.dp)
+                    Text(task.title, fontSize = 13.sp, color = Dopa.LimeForeground.copy(alpha = if (done) 0.55f else 1f))
+                }
+            }
+            Text(
+                "${ui.completedTaskIds.size} / ${ui.routineTasks.size} 完了  ・ ${ui.routineDate}",
+                fontSize = 11.sp, color = Dopa.LimeForeground.copy(alpha = 0.75f),
+            )
+        }
+        VSpace(12.dp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val blocked = ui.blocked.sortedBy { it.ordinal }.joinToString(" / ") { it.label }.ifEmpty { "なし" }
-            OutlineChip("制限: $blocked", Dopa.LimeForeground)
+            OutlineChip("制限: ${if (ui.blockedCount > 0) "${ui.blockedCount} アプリ" else "なし"}", Dopa.LimeForeground)
             OutlineChip("解除: 離床", Dopa.LimeForeground)
         }
     }
@@ -211,55 +281,51 @@ private fun StreakCard(streak: Int, modifier: Modifier) {
     }
 }
 
+/** アラームがまだないとき（タップで追加） */
 @Composable
-private fun DemoButton(onDemo: () -> Unit) {
+private fun EmptyAlarmRow(onAddAlarm: () -> Unit, locked: Boolean) {
     val shape = RoundedCornerShape(16.dp)
     Row(
-        Modifier.fillMaxWidth().clip(shape)
-            .drawBehind {
-                drawRoundRect(
-                    Dopa.Lime.copy(alpha = 0.5f),
-                    style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))),
-                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx()),
-                )
-            }
-            .clickable(onClick = onDemo)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().clip(shape).background(Dopa.Surface).border(1.dp, Dopa.Border, shape)
+            .clickable(enabled = !locked, onClick = onAddAlarm)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            DisplayText("アラームを鳴らす", 14.sp)
-            Text("デモ：起床フローを体験する（記録には残りません）", fontSize = 11.sp, color = Dopa.Muted)
-        }
-        IconBadge {
-            Icon(Icons.Rounded.Bolt, null, tint = Dopa.LimeForeground, modifier = Modifier.size(20.dp))
+        Column(Modifier.weight(1f).alpha(0.4f)) {
+            FitText("--:--", 30.sp)
+            Text("タップしてセット", fontSize = 11.sp, color = Dopa.Muted, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }
 
+/** スマホ側のアラーム1件（オン/オフ・削除）。一番近いものが M5Stack に送られる */
 @Composable
-private fun AlarmRow(ui: HomeUi, onAddAlarm: () -> Unit, onCancelAlarm: () -> Unit) {
+private fun LocalAlarmRow(
+    alarm: LocalAlarm,
+    locked: Boolean,
+    onToggle: (Long, Boolean) -> Unit,
+    onDelete: (Long) -> Unit,
+) {
     val shape = RoundedCornerShape(16.dp)
     Row(
-        Modifier.fillMaxWidth().clip(shape).background(Dopa.Surface).border(1.dp, Dopa.Border, shape)
-            .clickable(enabled = !ui.alarmLocked, onClick = onAddAlarm)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().clip(shape).background(Dopa.Surface)
+            .border(1.dp, Dopa.Border, shape)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val epoch = ui.alarmEpoch
-        Column(Modifier.weight(1f).alpha(if (epoch != null) 1f else 0.4f)) {
-            DisplayText(epoch?.let { formatEpoch(it, "HH:mm") } ?: "--:--", 30.sp)
-            Text(
-                epoch?.let { dayLabel(it) } ?: "タップしてセット",
-                fontSize = 11.sp, color = Dopa.Muted, modifier = Modifier.padding(top = 4.dp),
-            )
+        Column(Modifier.weight(1f).alpha(if (alarm.enabled) 1f else 0.4f)) {
+            FitText("%02d:%02d".format(alarm.hour, alarm.minute), 30.sp)
+            Text(AlarmSchedule.daysLabel(alarm), fontSize = 11.sp, color = Dopa.Muted)
         }
         DopaSwitch(
-            checked = epoch != null,
-            onChange = { on -> if (on) onAddAlarm() else onCancelAlarm() },
+            checked = alarm.enabled,
+            onChange = { onToggle(alarm.id, it) },
             label = "アラーム",
-            enabled = !ui.alarmLocked,
+            enabled = !locked,
         )
+        IconButton(onClick = { onDelete(alarm.id) }, enabled = !locked) {
+            Icon(Icons.Rounded.Delete, contentDescription = "アラームを削除", tint = Dopa.Alert)
+        }
     }
 }
 

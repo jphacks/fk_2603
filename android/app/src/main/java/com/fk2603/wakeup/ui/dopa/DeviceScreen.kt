@@ -3,7 +3,9 @@ package com.fk2603.wakeup.ui.dopa
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -19,9 +21,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material.icons.rounded.Sync
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -31,6 +36,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,12 +52,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.fk2603.wakeup.BlockCategory
 import com.fk2603.wakeup.M5Config
 import com.fk2603.wakeup.PressureLog
 import com.fk2603.wakeup.ui.formatEpoch
+import com.fk2603.wakeup.ui.formatReturns
+import com.fk2603.wakeup.ui.formatSleep
 import com.fk2603.wakeup.ui.stateLabel
 import com.fk2603.wakeup.ui.theme.Dopa
 import kotlin.math.roundToInt
@@ -61,9 +69,13 @@ fun DeviceScreen(
     ui: DeviceUi,
     nowSec: Long,
     onConfig: (threshold: Int, wakeConfirmSec: Int) -> Unit,
-    onToggleBlock: (BlockCategory, Boolean) -> Unit,
+    onToggleApp: (pkg: String, blocked: Boolean) -> Unit,
+    onBlockAll: () -> Unit,
+    onAllowAll: () -> Unit,
     onUsageAccess: () -> Unit,
     onSaveNickname: (String) -> Unit,
+    onDeleteAll: () -> Unit,
+    onUnpair: () -> Unit = {},
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp),
@@ -88,32 +100,48 @@ fun DeviceScreen(
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionLabel("在床中に封印するもの")
+            SectionLabel("在床中に封印するアプリ") {
+                SectionHint("${ui.apps.count { it.blocked }} / ${ui.apps.size} を制限中")
+            }
             if (!ui.usageAccess) {
                 Text(
-                    "「使用状況へのアクセス」が未許可のため、いまはベッドの上ではスマホ全体をロックします。許可すると ON にしたものだけを封印します。",
+                    "「使用状況へのアクセス」が未許可のため、いまはベッドの上ではスマホ全体をロックします。許可するとチェックしたアプリだけを封印します。",
                     fontSize = 11.sp, color = Dopa.Alert,
                 )
                 SmallButton("使用状況へのアクセスを許可", onUsageAccess)
             }
-            val shape = RoundedCornerShape(24.dp)
-            Column(Modifier.fillMaxWidth().clip(shape).background(Dopa.Surface).border(1.dp, Dopa.Border, shape)) {
-                BlockCategory.entries.forEachIndexed { i, c ->
-                    if (i > 0) HorizontalDivider(color = Dopa.Border)
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(c.label, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text(c.sub, fontSize = 11.sp, color = Dopa.Muted)
-                        }
-                        DopaSwitch(c in ui.blocked, { onToggleBlock(c, it) }, c.label)
-                    }
-                }
-            }
+            BlockAppList(ui.apps, onToggleApp, onBlockAll, onAllowAll)
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionLabel("PROFILE") { SectionHint("ランキングに出る名前") }
             NicknameField(ui.nickname, onSaveNickname)
+        }
+
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionLabel("SLEEP LOG") { SectionHint("就寝 → 起床") }
+            if (ui.sleeps.isEmpty()) SectionHint("まだ記録がありません")
+            ui.sleeps.take(14).forEach { s ->
+                DopaCard(Modifier.fillMaxWidth(), padding = PaddingValues(horizontal = 16.dp, vertical = 12.dp), radius = 16.dp) {
+                    Text(formatSleep(s), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    formatReturns(s.returnsAt)?.let { Text(it, fontSize = 11.sp, color = Dopa.Alert) }
+                }
+            }
+        }
+
+        Text(
+            "自分の記録をすべて削除",
+            Modifier.align(Alignment.CenterHorizontally).clip(RoundedCornerShape(12.dp))
+                .border(1.dp, Dopa.Alert, RoundedCornerShape(12.dp)).clickable(onClick = onDeleteAll)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            color = Dopa.Alert, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+        )
+        if (ui.pairedDevId != null) {
+            Text(
+                "この M5Stack の登録を解除",
+                Modifier.align(Alignment.CenterHorizontally).clickable(onClick = onUnpair).padding(8.dp),
+                color = Dopa.Muted, fontSize = 11.sp,
+            )
         }
     }
 }
@@ -145,6 +173,17 @@ private fun DeviceCard(ui: DeviceUi) {
         ui.state?.let {
             VSpace(10.dp)
             Text(stateLabel(it), fontSize = 11.sp, color = Dopa.Muted)
+        }
+        ui.pairedDevId?.let {
+            VSpace(10.dp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Lock, null, tint = Dopa.Lime, modifier = Modifier.size(14.dp))
+                HSpace(6.dp)
+                Text(
+                    "ID $it ・ AES-256-GCM で暗号化（QR で鍵交換）",
+                    fontSize = 11.sp, color = Dopa.Muted, maxLines = 1,
+                )
+            }
         }
     }
 }
@@ -296,6 +335,68 @@ private fun RangeField(
     Text(hint, fontSize = 11.sp, color = Dopa.Muted)
 }
 
+/** 封印するアプリの一覧（チェック = 封印）。最初は全部チェック済みで、使いたいものだけ外す */
+@Composable
+private fun BlockAppList(
+    apps: List<BlockApp>,
+    onToggle: (pkg: String, blocked: Boolean) -> Unit,
+    onBlockAll: () -> Unit,
+    onAllowAll: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SmallButton("すべて制限", onBlockAll, enabled = apps.any { !it.blocked })
+        SmallButton("すべて解除", onAllowAll, enabled = apps.any { it.blocked })
+    }
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        placeholder = { Text("アプリ名で絞り込む") },
+        singleLine = true,
+        shape = RoundedCornerShape(16.dp),
+        colors = dopaFieldColors(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    val shown = apps.filter { query.isBlank() || it.label.contains(query.trim(), ignoreCase = true) }
+    val shape = RoundedCornerShape(24.dp)
+    Column(Modifier.fillMaxWidth().clip(shape).background(Dopa.Surface).border(1.dp, Dopa.Border, shape)) {
+        if (shown.isEmpty()) {
+            Box(Modifier.padding(16.dp)) { SectionHint(if (apps.isEmpty()) "アプリを読み込んでいます…" else "見つかりません") }
+        }
+        shown.forEachIndexed { i, app ->
+            key(app.pkg) {
+                if (i > 0) HorizontalDivider(color = Dopa.Border)
+                Row(
+                    Modifier.fillMaxWidth().clickable { onToggle(app.pkg, !app.blocked) }.padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AppIcon(rememberAppInfo(app.pkg, app.label), 32.dp)
+                    HSpace(12.dp)
+                    Text(app.label, Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Checkbox(
+                        checked = app.blocked,
+                        onCheckedChange = { onToggle(app.pkg, it) },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = Dopa.Lime,
+                            checkmarkColor = Dopa.LimeForeground,
+                            uncheckedColor = Dopa.Muted,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun dopaFieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = Dopa.Lime,
+    unfocusedBorderColor = Dopa.Border,
+    cursorColor = Dopa.Lime,
+    focusedContainerColor = Dopa.Surface,
+    unfocusedContainerColor = Dopa.Surface,
+)
+
 @Composable
 private fun NicknameField(saved: String, onSave: (String) -> Unit) {
     var text by remember(saved) { mutableStateOf(saved) }
@@ -308,13 +409,7 @@ private fun NicknameField(saved: String, onSave: (String) -> Unit) {
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { onSave(text) }),
             shape = RoundedCornerShape(16.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = Dopa.Lime,
-                unfocusedBorderColor = Dopa.Border,
-                cursorColor = Dopa.Lime,
-                focusedContainerColor = Dopa.Surface,
-                unfocusedContainerColor = Dopa.Surface,
-            ),
+            colors = dopaFieldColors(),
             modifier = Modifier.weight(1f),
         )
         HSpace(8.dp)

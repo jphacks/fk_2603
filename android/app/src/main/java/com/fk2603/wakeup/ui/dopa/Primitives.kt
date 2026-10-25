@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -59,6 +61,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import com.fk2603.wakeup.R
 import com.fk2603.wakeup.ui.theme.Dopa
@@ -165,12 +168,34 @@ fun DisplayText(
     color: Color = Dopa.Foreground,
     lineHeight: TextUnit = size * 1.05f,
     textAlign: TextAlign? = null,
-    maxLines: Int = Int.MAX_VALUE,
+    maxLines: Int = 1,
 ) {
     Text(
         text, modifier, color = color, fontFamily = Dopa.Display, fontSize = size,
         lineHeight = lineHeight, textAlign = textAlign, maxLines = maxLines, softWrap = maxLines > 1,
         style = TextStyle(fontFeatureSettings = "tnum"),
+    )
+}
+
+/** 1行に収まるよう自動で縮む Dela Gothic One の文字（時刻など大きい数字用） */
+@Composable
+fun FitText(
+    text: String,
+    maxSize: TextUnit,
+    modifier: Modifier = Modifier,
+    color: Color = Dopa.Foreground,
+    minSize: TextUnit = 12.sp,
+    textAlign: TextAlign? = null,
+) {
+    BasicText(
+        text, modifier,
+        style = TextStyle(
+            color = color, fontFamily = Dopa.Display, lineHeight = 1.05.em, fontFeatureSettings = "tnum",
+            textAlign = textAlign ?: TextAlign.Unspecified,
+        ),
+        maxLines = 1,
+        softWrap = false,
+        autoSize = TextAutoSize.StepBased(minFontSize = minSize, maxFontSize = maxSize),
     )
 }
 

@@ -45,14 +45,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.fk2603.wakeup.BlockCategory
 import com.fk2603.wakeup.Config
 import com.fk2603.wakeup.Gamification
 import com.fk2603.wakeup.M5Config
 import com.fk2603.wakeup.M5Link
+import com.fk2603.wakeup.nextEpoch
 import com.fk2603.wakeup.ui.AppViewModel
 import com.fk2603.wakeup.ui.theme.Dopa
 import kotlinx.coroutines.delay
@@ -74,17 +77,21 @@ fun AppShell(vm: AppViewModel) {
     val statusError by vm.statusError.collectAsState()
     val sleeps by vm.sleeps.collectAsState()
     val samples by vm.pressure.collectAsState()
-    val mine by vm.myRecords.collectAsState()
-    val ranking by vm.ranking.collectAsState()
-    val myUid by vm.myUid.collectAsState()
-    val recordsError by vm.recordsError.collectAsState()
+    val wakes by vm.wakes.collectAsState()
+    val screenTime by vm.screenTime.collectAsState()
+    val alarms by vm.alarms.collectAsState()
+    val routineTasks by vm.routineTasks.collectAsState()
+    val routineHistory by vm.routineHistory.collectAsState()
     val nickname by vm.nickname.collectAsState()
-    val blocked by vm.blocked.collectAsState()
+    val allowed by vm.allowed.collectAsState()
+    val apps by vm.apps.collectAsState()
+    val blockApps = remember(apps, allowed) { apps.map { BlockApp(it.pkg, it.label, it.pkg !in allowed) } }
     val warnings by vm.warnings.collectAsState()
     val usageAccess by vm.usageAccess.collectAsState()
     val message by vm.message.collectAsState()
     val loading by vm.loading.collectAsState()
     val clear by vm.clear.collectAsState()
+    val paired by vm.paired.collectAsState()
 
     val nowMs by produceState(System.currentTimeMillis()) {
         while (true) {
@@ -94,12 +101,20 @@ fun AppShell(vm: AppViewModel) {
     }
     val nowSec = nowMs / 1000
     val connected = status != null && nowMs - M5Link.lastStatusMs < Config.BLE_STALE_MS
-    val progress = remember(mine) { Gamification.progress(mine) }
+    // ホームのアラームのうち一番近い時刻と、朝のルーティンの対象日（1分ごと・変更時に選び直す）
+    val nextAlarmEpoch = remember(alarms, nowSec / 60) { alarms.mapNotNull { it.nextEpoch() }.minOrNull() }
+    val routineDate = remember(alarms, nowSec / 60) { vm.routineDate() }
+    // 履歴が変わったら（チェックしたら）完了状態を読み直す
+    val routineDone = remember(routineHistory, routineDate) { vm.routineDoneIds(routineDate) }
+    var pendingDeleteAlarm by remember { mutableStateOf<Long?>(null) }
+    var showRoutineEditor by remember { mutableStateOf(false) }
+    val progress = remember(wakes) { Gamification.progress(wakes.map { it.toRecord() }) }
 
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
     var showPicker by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var demo by remember { mutableStateOf<DemoStep?>(null) }
+    var showScreenTime by rememberSaveable { mutableStateOf(false) }
 
     // 操作結果のメッセージは数秒で消す
     LaunchedEffect(message) {
@@ -119,10 +134,34 @@ fun AppShell(vm: AppViewModel) {
         runCatching { context.startActivity(intent) }
     }
 
+    // Google のスキャナー画面で QR を読む（アプリにカメラの権限は要らない）
+    fun scanDevice() {
+        val options = GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
+        GmsBarcodeScanning.getClient(context, options).startScan()
+            .addOnSuccessListener { code -> code.rawValue?.let(vm::pairDevice) ?: vm.onScanFailed() }
+            .addOnFailureListener { vm.onScanFailed() }
+    }
+
     Box(Modifier.fillMaxSize().background(Dopa.Background)) {
         val c = clear
         when {
-            demo != null -> DemoFlow(demo!!, nowSec, blocked, onStep = { demo = it }, clearUi = { vm.demoClear(it) })
+            demo != null -> DemoFlow(
+                demo!!, nowSec, blockApps.filter { it.blocked }.take(5).map { it.pkg }, progressStreak = vm.emergency.value.streak,
+                routine = vm.todayRoutine(),
+                onStep = { demo = it }, clearUi = { vm.demoClear(it) },
+                onEmergency = {
+                    vm.emergencyUnlock()
+                    demo = null
+                },
+            )
+            showScreenTime -> Box(Modifier.statusBarsPadding().navigationBarsPadding()) {
+                ScreenTimeCheckScreen(
+                    screenTime,
+                    onReload = vm::loadScreenTime,
+                    onAccess = { openSetting(SetupWarning.USAGE) },
+                    onClose = { showScreenTime = false },
+                )
+            }
             c != null -> {
                 BackHandler { vm.dismissClear() }
                 Box(Modifier.statusBarsPadding().navigationBarsPadding()) { ClearScreen(c, vm::dismissClear) }
@@ -141,30 +180,40 @@ fun AppShell(vm: AppViewModel) {
                                     connected = connected,
                                     inBed = s?.inBed == true,
                                     state = s?.state,
-                                    alarmEpoch = s?.alarmEpoch?.takeIf { it > 0 && s.state in ALARM_SHOWN_STATES },
+                                    alarmEpoch = nextAlarmEpoch,
+                                    localAlarms = alarms,
+                                    routineDate = routineDate.toString(),
+                                    routineTasks = routineTasks.filter { it.appliesTo(routineDate) },
+                                    completedTaskIds = routineDone,
                                     alarmLocked = s?.state in ALARM_ACTIVE_STATES,
-                                    blocked = blocked,
+                                    blockedCount = blockApps.count { it.blocked },
                                     warnings = warnings,
                                     message = message ?: statusError?.takeIf { !connected },
+                                    paired = paired,
                                 ),
                                 nowSec = nowSec,
                                 onAddAlarm = { showPicker = true },
-                                onCancelAlarm = vm::cancelAlarm,
+                                onToggleLocalAlarm = vm::setAlarmEnabled,
+                                onDeleteLocalAlarm = { pendingDeleteAlarm = it },
+                                onEditRoutine = { showRoutineEditor = true },
+                                onToggleRoutineTask = vm::toggleRoutineTask,
                                 onWarning = ::openSetting,
-                                onDemo = { demo = DemoStep.ALARM },
+                                onAddDevice = ::scanDevice,
                             )
                         }
                         Tab.STATS -> StatsScreen(
                             StatsUi(
                                 nickname = nickname,
                                 progress = progress,
-                                ranking = ranking.map { RankRow(it.nickname.ifBlank { "名無し" }, it.durationSec, it.uid == myUid) },
-                                sleeps = sleeps,
+                                routineHistory = routineHistory,
                                 loading = loading,
-                                message = message ?: recordsError,
+                                message = message,
                             ),
                             onRefresh = { vm.refreshPermissions(); vm.refreshRecords() },
-                            onDeleteAll = { confirmDelete = true },
+                            onScreenTime = {
+                                showScreenTime = true
+                                vm.loadScreenTime()
+                            },
                         )
                         Tab.DEVICE -> {
                             val s = status
@@ -182,16 +231,22 @@ fun AppShell(vm: AppViewModel) {
                                     sleepEndAt = latest?.endAt?.takeIf { it > 0 },
                                     config = s?.config,
                                     configLocked = s?.locked == true,
-                                    blocked = blocked,
+                                    apps = blockApps,
                                     usageAccess = usageAccess,
                                     nickname = nickname,
+                                    sleeps = sleeps,
                                     message = message,
+                                    pairedDevId = if (paired) vm.pairedDevId() else null,
                                 ),
                                 nowSec = nowSec,
                                 onConfig = vm::setConfig,
-                                onToggleBlock = vm::setBlocked,
+                                onToggleApp = vm::setAppBlocked,
+                                onBlockAll = vm::blockAllApps,
+                                onAllowAll = vm::allowAllApps,
                                 onUsageAccess = { openSetting(SetupWarning.USAGE) },
                                 onSaveNickname = vm::saveNickname,
+                                onDeleteAll = { confirmDelete = true },
+                                onUnpair = vm::unpairDevice,
                             )
                         }
                     }
@@ -203,14 +258,39 @@ fun AppShell(vm: AppViewModel) {
 
     if (showPicker) {
         AlarmTimeDialog(
-            initial = status?.alarmEpoch?.takeIf { it > 0 }
+            initial = nextAlarmEpoch
                 ?.let { java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).toLocalTime() }
                 ?: LocalTime.of(7, 30),
             onDismiss = { showPicker = false },
-            onSave = { h, m ->
+            onSave = { h, m, days ->
                 showPicker = false
-                vm.setAlarm(h, m)
+                vm.addAlarm(h, m, days)
             },
+        )
+    }
+
+    if (showRoutineEditor) {
+        RoutineDialog(
+            tasks = routineTasks,
+            onDismiss = { showRoutineEditor = false },
+            onAdd = vm::addRoutineTask,
+            onDelete = vm::removeRoutineTask,
+        )
+    }
+
+    pendingDeleteAlarm?.let { id ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteAlarm = null },
+            containerColor = Dopa.Surface,
+            title = { Text("アラームを削除") },
+            text = { Text("このアラームを削除しますか？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.removeAlarm(id)
+                    pendingDeleteAlarm = null
+                }) { Text("削除", color = Dopa.Alert) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDeleteAlarm = null }) { Text("キャンセル", color = Dopa.Foreground) } },
         )
     }
 
@@ -231,8 +311,6 @@ fun AppShell(vm: AppViewModel) {
     }
 }
 
-/** アラームの時刻を表示する状態（WAITING の時刻は待ちの期限、RESLEEP_ARMED は再鳴動の時刻なので出さない） */
-private val ALARM_SHOWN_STATES = setOf("ARMED", "AWAKE")
 /** アラームを変えられない状態 */
 private val ALARM_ACTIVE_STATES = setOf("RINGING", "RESLEEP_ARMED")
 
@@ -265,9 +343,12 @@ private fun NavBar(tab: Tab, onSelect: (Tab) -> Unit) {
 private fun DemoFlow(
     step: DemoStep,
     nowSec: Long,
-    blocked: Set<BlockCategory>,
+    blockedPkgs: List<String>,
+    progressStreak: Int,
+    routine: List<String>,
     onStep: (DemoStep?) -> Unit,
     clearUi: (Long) -> ClearUi,
+    onEmergency: () -> Unit,
 ) {
     BackHandler { onStep(null) }
     var elapsed by remember { mutableIntStateOf(134) }
@@ -292,7 +373,7 @@ private fun DemoFlow(
             pressure = maxOf(0, pressure - 7)
         }
         delay(450)
-        result = clearUi(elapsed.toLong())
+        result = clearUi(elapsed.toLong()).copy(routine = routine)
         onStep(DemoStep.CLEAR)
     }
     val threshold = 30
@@ -304,12 +385,14 @@ private fun DemoFlow(
         pressureRaw = pressure * M5Config.RAW_MAX / 100,
         threshold = threshold * M5Config.RAW_MAX / 100,
         inBed = pressure >= threshold,
-        blocked = blocked,
+        blockedPkgs = blockedPkgs,
+        streak = progressStreak,
     )
     Box(Modifier.fillMaxSize()) {
         when (step) {
-            DemoStep.ALARM -> AlarmScreen(lockUi, nowSec, onStop = { onStep(DemoStep.LOCK) })
-            DemoStep.LOCK -> LockScreen(lockUi, onLeaveBed = { leaving = true }, leaving = leaving)
+            // 緊急解除の仮ボタンは本物の処理（回数・連続記録が変わる）につながる
+            DemoStep.ALARM -> AlarmScreen(lockUi, nowSec, onStop = { onStep(DemoStep.LOCK) }, onEmergency = onEmergency)
+            DemoStep.LOCK -> LockScreen(lockUi, onLeaveBed = { leaving = true }, leaving = leaving, onEmergency = onEmergency)
             DemoStep.CLEAR -> result?.let {
                 Box(Modifier.statusBarsPadding().navigationBarsPadding()) { ClearScreen(it) { onStep(null) } }
             }

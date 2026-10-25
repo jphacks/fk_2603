@@ -26,16 +26,19 @@
 #include <Preferences.h>
 #include <sys/time.h>
 #include <time.h>
+#include "secure_link.h"
 
 // ============================================================
 // 設定値（ここを変更して調整する）
 // ============================================================
 // --- BLE（UUID は Android 側 M5Link.kt と合わせる）---
-const char* BLE_NAME = "WakeUp";
+const char* BLE_NAME = "WakeUp";  // 実際の名前は "WakeUp-<devId>"（スマホは QR の devId で探す）
 const char* SERVICE_UUID = "6e0f0001-3b6a-4c1e-9b3a-2a4f8c1d7e01";
 const char* STATUS_UUID = "6e0f0002-3b6a-4c1e-9b3a-2a4f8c1d7e01";   // read / notify: 状態 JSON
 const char* COMMAND_UUID = "6e0f0003-3b6a-4c1e-9b3a-2a4f8c1d7e01";  // write: コマンド JSON
 const uint32_t STATUS_NOTIFY_MS = 1000;  // 接続中に状態を送る間隔
+const uint32_t PAIR_HOLD_MS = 3000;       // C ボタンをこの時間押し続けるとペアリング（QR 表示）
+const uint32_t UNPAIR_ALL_HOLD_MS = 5000; // A ボタンをこの時間押し続けると全スマホの登録を消す
 
 // --- 圧力センサ ---
 const int FSR_PIN = 36;               // ADC1
@@ -171,8 +174,11 @@ uint32_t bedChangedMs = 0;
 BLECharacteristic* statusChar = nullptr;
 volatile bool bleConnected = false;
 struct CommandMsg {
-  char data[200];
+  uint16_t len;
+  uint8_t data[256];  // 暗号化されたフレーム（secure_link.h）
 };
+volatile bool sessionResetPending = false;  // 接続・切断があった（loop() でセッションを作り直す）
+bool qrShown = false;                       // LCD に QR を表示中
 QueueHandle_t commandQueue;
 uint32_t ackSeq = 0;
 String ackError = "";
@@ -428,7 +434,33 @@ void updateState() {
   }
 }
 
+// ペアリングはベッドの外でだけ。寝ぼけたまま別のスマホを登録して止めることを防ぐ
+void handleSecurityButtons() {
+  // 押し続けている間に何度も反応しないよう、離すまで1回だけにする
+  static bool cHeld = false;
+  static bool aHeld = false;
+  if (!M5.BtnC.isPressed()) cHeld = false;
+  if (!M5.BtnA.isPressed()) aHeld = false;
+  if (!cHeld && M5.BtnC.pressedFor(PAIR_HOLD_MS)) {
+    cHeld = true;
+    if (inBed || isAlarmActive(state)) {
+      Serial.println("[SEC] pairing refused (in bed or alarm active)");
+    } else {
+      SecureLink::startPairing();
+      M5.Speaker.tone(ALARM_FREQ_HZ, 80);
+    }
+  }
+  if (!aHeld && M5.BtnA.pressedFor(UNPAIR_ALL_HOLD_MS)) {
+    aHeld = true;
+    if (!inBed && !isAlarmActive(state)) {
+      SecureLink::clearAll();
+      M5.Speaker.tone(ALARM_FREQ_HZ / 2, 300);
+    }
+  }
+}
+
 void handleButtons() {
+  handleSecurityButtons();
   if (M5.BtnA.wasPressed() && volumeLevel < VOLUME_MAX) {
     volumeLevel++;
     applyVolume();
@@ -489,8 +521,39 @@ String fmtTime(time_t t) {
   return String(buf);
 }
 
+// ペアリング中は QR を表示する（スマホのカメラで読む）
+void drawPairingScreen() {
+  auto& d = M5.Display;
+  if (!qrShown) {
+    d.fillScreen(TFT_WHITE);
+    d.qrcode(SecureLink::qrText(), 80, 0, 240, 1);
+    qrShown = true;
+  }
+  // 左の余白（80px）に残り時間と devId
+  d.setTextSize(2);
+  d.setTextColor(TFT_BLACK, TFT_WHITE);
+  d.setCursor(4, 8);
+  d.print("PAIR");
+  d.setCursor(4, 28);
+  d.printf("%3us", SecureLink::pairingRemainingSec());
+  d.setCursor(4, 180);
+  d.print("ID");
+  d.setCursor(4, 200);
+  d.printf("%.4s", SecureLink::devId());
+  d.setCursor(4, 220);
+  d.printf("%.4s", SecureLink::devId() + 4);
+}
+
 void drawScreen() {
   auto& d = M5.Display;
+  if (SecureLink::pairing()) {
+    drawPairingScreen();
+    return;
+  }
+  if (qrShown) {
+    d.fillScreen(TFT_BLACK);
+    qrShown = false;
+  }
   d.startWrite();
   d.setTextColor(TFT_WHITE, TFT_BLACK);
   d.setTextSize(2);
@@ -514,7 +577,9 @@ void drawScreen() {
   } else {
     d.printf("%-26s\n", "Sleep : -");
   }
-  d.printf("BLE   : %-18s\n", bleConnected ? "connected" : "waiting");
+  d.printf("BLE   : %-18s\n", !bleConnected ? "waiting" : SecureLink::authenticated() ? "SECURE" : "connected");
+  d.setTextColor(SecureLink::blockedCount() > 0 ? TFT_RED : TFT_WHITE, TFT_BLACK);
+  d.printf("Phone : %d  BLOCKED %-6u\n", SecureLink::pairedCount(), SecureLink::blockedCount());
 
   // 音量（大きく表示）
   d.setTextSize(4);
@@ -536,6 +601,8 @@ void drawScreen() {
 
 // ------------------------------------------------------------
 // BLE
+//   すべて secure_link.h のフレームで暗号化する。認証前は hello だけを notify し、平文の JSON は受け付けない
+//   以下は認証後に DATA フレームの中に入る JSON
 //   状態: STATUS を read / notify（JSON）
 //   コマンド: COMMAND に JSON を write
 //     {"cmd":"time","epoch":<unix秒>}            時刻を合わせる
@@ -543,6 +610,7 @@ void drawScreen() {
 //     {"seq":n,"cmd":"cancel"}                   アラームを解除
 //     {"cmd":"evack","id":n}                     睡眠イベント n を受け取った（次のイベントを送る）
 //     {"seq":n,"cmd":"config","th":<raw>,"wc":<秒>} 在床しきい値と起床確認時間を変更（NVS に保存）
+//     {"cmd":"unpair"}                           このスマホの登録を消す
 //   seq 付きのコマンドの結果は、状態 JSON の ack に入る
 // ------------------------------------------------------------
 
@@ -550,7 +618,7 @@ void drawScreen() {
 //   s=状態 l=ロック a=次に鳴る時刻 v=音量 t=現在時刻 r=raw b=ベッドにいる
 //   w=[id, ringAt, awakeAt, durationSec, resleep]（記録なしは null） k=[seq, error]
 //   e=[id, 種類(S=就寝 R=二度寝 E=起床), 時刻]（未送信でいちばん古い睡眠イベント。なしは null）
-//   c=[在床しきい値, 起床確認秒]
+//   c=[在床しきい値, 起床確認秒] p=1（再接続モード中だけ。スマホはこれを見て登録を解除する）
 String buildStatusJson() {
   JsonDocument doc;
   doc["s"] = stateName(state);
@@ -586,16 +654,28 @@ String buildStatusJson() {
   JsonArray c = doc["c"].to<JsonArray>();
   c.add(inBedThreshold);
   c.add(wakeConfirmSec);
+  if (SecureLink::pairing()) doc["p"] = 1;  // 再接続モード中（スマホ側も登録を解除する）
   String body;
   serializeJson(doc, body);
   return body;
 }
 
-void notifyStatus() {
-  String body = buildStatusJson();
-  if (body.length() > 244) Serial.printf("[BLE] status too long: %u bytes\n", body.length());
-  statusChar->setValue(body);
+void sendFrame(const uint8_t* frame, size_t len) {
+  statusChar->setValue(frame, len);
   if (bleConnected) statusChar->notify();
+}
+
+// 認証済みなら暗号化した状態 JSON、まだなら hello（センサー値は出さない）
+void notifyStatus() {
+  uint8_t frame[300];
+  size_t len = 0;
+  if (SecureLink::authenticated()) {
+    String body = buildStatusJson();
+    len = SecureLink::seal(body.c_str(), frame, sizeof(frame));
+    if (len > 244) Serial.printf("[BLE] status too long: %u bytes\n", len);
+  }
+  if (len == 0) len = SecureLink::buildHello(frame, sizeof(frame));
+  sendFrame(frame, len);
   lastNotifyMs = millis();
 }
 
@@ -640,7 +720,7 @@ void loadSettings() {
   Serial.printf("[BOOT] threshold=%d wakeConfirm=%lus\n", inBedThreshold, (unsigned long)wakeConfirmSec);
 }
 
-void handleCommand(const char* text) {
+void handleJsonCommand(const char* text) {
   JsonDocument req;
   if (deserializeJson(req, text)) {
     Serial.printf("[BLE] bad command: %s\n", text);
@@ -659,6 +739,8 @@ void handleCommand(const char* text) {
     err = doCancelAlarm();
   } else if (strcmp(cmd, "config") == 0) {
     err = doConfig(req["th"] | -1, req["wc"] | -1L);
+  } else if (strcmp(cmd, "unpair") == 0) {
+    SecureLink::unpairCurrent();
   } else {
     err = "unknown command";
   }
@@ -669,14 +751,26 @@ void handleCommand(const char* text) {
   notifyStatus();
 }
 
+void handleCommand(const uint8_t* data, size_t len) {
+  char plain[256];
+  uint8_t reply[8];
+  size_t replyLen = 0;
+  SecureLink::Result r =
+      SecureLink::handleFrame(data, len, plain, sizeof(plain), reply, sizeof(reply), &replyLen);
+  if (replyLen > 0) sendFrame(reply, replyLen);
+  if (r == SecureLink::PLAINTEXT) {
+    handleJsonCommand(plain);
+  } else if (r == SecureLink::AUTHED) {
+    notifyStatus();
+  }
+}
+
 // BLE のコールバックは別タスクで呼ばれるので、コマンドはキューに入れて loop() で処理する
 class CommandCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
-    String v = c->getValue();
     CommandMsg msg;
-    size_t n = min((size_t)v.length(), sizeof(msg.data) - 1);
-    memcpy(msg.data, v.c_str(), n);
-    msg.data[n] = '\0';
+    msg.len = min(c->getLength(), sizeof(msg.data));
+    memcpy(msg.data, c->getData(), msg.len);
     xQueueSend(commandQueue, &msg, 0);
   }
 };
@@ -684,10 +778,12 @@ class CommandCallbacks : public BLECharacteristicCallbacks {
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
     bleConnected = true;
+    sessionResetPending = true;
     Serial.println("[BLE] connected");
   }
   void onDisconnect(BLEServer*) override {
     bleConnected = false;
+    sessionResetPending = true;
     Serial.println("[BLE] disconnected");
     BLEDevice::startAdvertising();
   }
@@ -695,7 +791,18 @@ class ServerCallbacks : public BLEServerCallbacks {
 
 void setupBle() {
   commandQueue = xQueueCreate(8, sizeof(CommandMsg));
-  BLEDevice::init(BLE_NAME);
+  // 広告名は init() の名前で決まるので、先に鍵（devId）が要る
+  // 初回だけは BLE を動かしてから鍵を作り（真の乱数のため）、保存して再起動する
+  if (!SecureLink::begin()) {
+    BLEDevice::init(BLE_NAME);
+    if (SecureLink::createKey()) {
+      Serial.println("[BOOT] device key created, restarting");
+      delay(100);
+      ESP.restart();
+    }
+    Serial.println("[BOOT] secure link unavailable");
+  }
+  BLEDevice::init(String(BLE_NAME) + "-" + SecureLink::devId());
   BLEDevice::setMTU(517);  // 状態 JSON を1回の notify で送れるようにする
   BLEServer* server = BLEDevice::createServer();
   server->setCallbacks(new ServerCallbacks());
@@ -735,13 +842,20 @@ void setup() {
   bedChangedMs = millis();
 
   setupBle();
+  if (SecureLink::pairedCount() == 0) SecureLink::startPairing();  // 未登録なら最初から QR を出す
   Serial.println("[BOOT] ready");
 }
 
 void loop() {
   M5.update();
+  if (sessionResetPending) {
+    sessionResetPending = false;
+    SecureLink::resetSession();
+    notifyStatus();
+  }
+  SecureLink::update();
   CommandMsg msg;
-  while (xQueueReceive(commandQueue, &msg, 0) == pdTRUE) handleCommand(msg.data);
+  while (xQueueReceive(commandQueue, &msg, 0) == pdTRUE) handleCommand(msg.data, msg.len);
   readPressure();
   handleButtons();
   updateState();

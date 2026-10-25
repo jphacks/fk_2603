@@ -40,9 +40,12 @@ GND ─────────────┘
 1. Arduino IDE でボード **M5Core**（M5Stack ボードパッケージ）を選択し、「ツール」→「Partition Scheme」を **Huge APP (3MB No OTA/1MB SPIFFS)** にする（BLE が大きく、初期値の 1.2MB には入らない）
 2. ライブラリマネージャで **M5Unified** と **ArduinoJson** をインストール（BLE はボードパッケージに含まれる）
 3. `wakeup_alarm/wakeup_alarm.ino` を書き込み、シリアルモニタ（115200bps）で動作を確認
-4. スマホのアプリを開くと BLE で自動的に接続し、M5Stack の時刻が合う（LCD の `BLE : connected`）
+4. 未登録の M5Stack は起動すると LCD に QR を表示する。アプリのホームの「デバイスを追加」で読み取ると登録され、暗号化して接続する（LCD の `BLE : SECURE`）。時刻もこのとき合う
 
 ボタン: **A(左) = 音量アップ / B(中) = 音量ダウン / C(右) = アラーム停止（ベッドの外にいるときだけ）**
+
+- **C を3秒長押し** = スマホを追加登録（QR を120秒表示）。ベッドの外にいて、アラーム処理中でないときだけ
+- **A を5秒長押し** = 登録したスマホをすべて消す（ベッドの外にいるときだけ）
 
 ## 設定値（`wakeup_alarm.ino` 上部）
 
@@ -88,11 +91,23 @@ AWAKE ─(20分経過)→ IDLE / ARMED
 
 | 項目 | UUID | 内容 |
 |---|---|---|
-| サービス | `6e0f0001-3b6a-4c1e-9b3a-2a4f8c1d7e01` | 広告名 `WakeUp` |
-| 状態 | `6e0f0002-…` | read / notify。状態の JSON（1秒ごと、コマンド処理後にも送る） |
-| コマンド | `6e0f0003-…` | write。コマンドの JSON |
+| サービス | `6e0f0001-3b6a-4c1e-9b3a-2a4f8c1d7e01` | 広告名 `WakeUp-<devId>` |
+| 状態 | `6e0f0002-…` | read / notify。暗号化した状態の JSON（1秒ごと、コマンド処理後にも送る） |
+| コマンド | `6e0f0003-…` | write。暗号化したコマンドの JSON |
 
-コマンド:
+### 暗号化（[secure_link.h](wakeup_alarm/secure_link.h)）
+
+平文の JSON は受け付けない（LCD の `BLOCKED` が増える）。手順は次のとおり。
+
+1. **鍵**: 初回起動時に P-256 の鍵ペアを作って NVS に保存する。`devId` = SHA-256(公開鍵) の先頭4バイト
+2. **QR**: `WAKEUP1:<devId>:<base64url(公開鍵65B)>:<base64url(使い捨てトークンT 16B)>`
+3. **ペアリング**: スマホ → `0x01 | 一時公開鍵(65) | phoneId(8) | HMAC(T, 公開鍵‖phoneId)(32)`。M5Stack は HMAC を確かめ、`K = HKDF(ECDH, salt=T, "wakeup-v1"‖devId‖phoneId)` を最大4台分保存する。結果は `0x11 | 0=成功`
+4. **接続ごとの認証**: M5Stack は認証前は `0x10 | devId(4) | nonceD(16) | QR表示中(1)` だけを送る。スマホ → `0x02 | phoneId | nonceP(16) | HMAC(K, "auth"‖nonceD‖nonceP)`。失敗なら `0x12`
+5. **通信**: `0x20 | ctr(4) | AES-256-GCM(JSON) | tag(16)`。鍵は `HKDF(K, nonceD‖nonceP, "session")`、IV = 方向(1)‖0(7)‖ctr(4)。ctr が増えていないフレームは捨てる
+
+アプリ側の実装は `android/.../SecureChannel.kt`。**ファームとアプリは同時に更新する**（片方だけでは接続できない）。
+
+コマンド（DATA フレームの中身）:
 
 | JSON | 内容 |
 |---|---|
@@ -101,10 +116,11 @@ AWAKE ─(20分経過)→ IDLE / ARMED
 | `{"seq":n,"cmd":"cancel"}` | アラームを解除 |
 | `{"cmd":"evack","id":n}` | 睡眠イベント n を受け取った。M5Stack は次のイベントを `e` で送る（最大16件ためておける） |
 | `{"seq":n,"cmd":"config","th":<raw>,"wc":<秒>}` | 在床しきい値と起床確認時間を変更（範囲外は `out of range`、在床中・アラーム中は `locked`） |
+| `{"cmd":"unpair"}` | このスマホの登録を消す |
 
 `seq` を付けたコマンドの結果は、状態の `k` に入る（error が空なら成功。`locked` / `time not set` など）。
 
-状態は notify 1回（MTU 247 なら 244 バイト）に収まるよう、短いキーにしている:
+状態は暗号化で21バイト増えても notify 1回（MTU 247 なら 244 バイト）に収まるよう、短いキーにしている:
 
 ```json
 {"s":"AWAKE","l":0,"a":0,"v":1,"t":1761300000,"r":12,"b":0,"w":[1,1761299900,1761299942,42,0],"e":[3,"E",1761300003],"k":[123,""],"c":[300,10]}

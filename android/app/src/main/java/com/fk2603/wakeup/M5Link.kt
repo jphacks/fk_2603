@@ -24,6 +24,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -66,6 +69,7 @@ data class M5Status(
     val ackSeq: Int,
     val ackError: String,
     val config: M5Config?,  // 古いファームでは null
+    val pairingMode: Boolean = false,  // M5Stack が再接続モード（右ボタン長押しで QR 表示中）
 )
 
 /** M5Stack の判定設定（アプリから変更できる） */
@@ -81,10 +85,14 @@ data class M5Config(
     }
 }
 
-class M5Exception(message: String) : Exception(message)
+open class M5Exception(message: String) : Exception(message)
+
+/** QR での登録に失敗した（接続をやり直しても直らないので、もう一度 QR を読んでもらう） */
+class PairingException(message: String) : M5Exception(message)
 
 /**
  * M5Stack と BLE でつなぐ（アプリ全体で1本の接続を共有する）
+ * - QR で登録した M5Stack（WakeUp-<devId>）だけにつなぎ、通信はすべて暗号化する（SecureChannel）
  * - 状態は notify で受け取り StatusHolder に入れる
  * - 接続時と一定間隔でスマホの時刻を送る（M5Stack は Wi-Fi を使わないため）
  */
@@ -97,6 +105,7 @@ object M5Link {
     private val STATUS_UUID = UUID.fromString("6e0f0002-3b6a-4c1e-9b3a-2a4f8c1d7e01")
     private val COMMAND_UUID = UUID.fromString("6e0f0003-3b6a-4c1e-9b3a-2a4f8c1d7e01")
     private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    private const val NAME_PREFIX = "WakeUp-"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var job: Job? = null
@@ -106,6 +115,16 @@ object M5Link {
     @Volatile private var pendingOp: CompletableDeferred<Int>? = null
     // アプリを再起動しても M5Stack に残っている ack と重ならないようにする
     private val seq = AtomicInteger((System.currentTimeMillis() / 1000 % 1_000_000).toInt())
+
+    /** 認証が済んだ接続の暗号化。null の間は状態を受け取らず、コマンドも送らない */
+    @Volatile private var session: SecureChannel.Session? = null
+    /** 認証前のフレーム（hello・ペアリング結果・認証失敗） */
+    private val handshakeFrames = Channel<ByteArray>(16, BufferOverflow.DROP_OLDEST)
+    /** 読み取った QR（登録が終わるまで） */
+    @Volatile private var pendingQr: SecureChannel.PairingQr? = null
+    @Volatile private var pairDone: CompletableDeferred<Unit>? = null
+
+    @Volatile private var appContext: Context? = null
 
     /** 最後に状態を受け取った時刻（ms） */
     @Volatile var lastStatusMs = 0L
@@ -119,9 +138,54 @@ object M5Link {
         }
 
     fun start(context: Context) {
+        appContext = context.applicationContext
+        PairingStore.load(context.applicationContext)
         if (job?.isActive == true) return
         val app = context.applicationContext
         job = scope.launch { runLoop(app) }
+    }
+
+    /** QR で読んだ M5Stack を登録する（つないで鍵を交換し、M5Stack が受け入れたら保存する） */
+    suspend fun pair(context: Context, qrText: String) {
+        val qr = SecureChannel.parseQr(qrText) ?: throw PairingException("WakeUp の QR コードではありません")
+        val done = CompletableDeferred<Unit>()
+        pairDone?.cancel()
+        pairDone = done
+        pendingQr = qr
+        start(context)
+        gatt?.disconnect()  // ほかの M5Stack とつながっていたら切って、QR の M5Stack で始め直す
+        try {
+            withTimeout(Config.PAIR_TIMEOUT_MS) { done.await() }
+        } catch (e: TimeoutCancellationException) {
+            throw PairingException("M5Stack が見つかりません（QR を表示したまま近づけてください）")
+        } finally {
+            if (pendingQr === qr) pendingQr = null
+        }
+    }
+
+    /**
+     * M5Stack が再接続モードになったので、このスマホの登録を消して切断する
+     * （ホームに「デバイスを追加」が出るので、表示中の QR を読み直してもらう）
+     */
+    private fun dropPairing() {
+        appContext?.let { PairingStore.clear(it) }
+        session = null
+        StatusHolder.status.value = null
+        StatusHolder.error.value = "M5Stack が再接続モードになったので登録を解除しました。表示中の QR を読み直してください"
+        gatt?.disconnect()
+        Log.i(TAG, "M5Stack entered pairing mode: unpaired")
+    }
+
+    /** このスマホの登録を消す（M5Stack 側の登録も消してから切断する） */
+    suspend fun unpair(context: Context) {
+        try {
+            if (session != null) write(JSONObject().put("cmd", "unpair").toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "unpair on device failed: $e")
+        }
+        PairingStore.clear(context)
+        StatusHolder.status.value = null
+        gatt?.disconnect()
     }
 
     suspend fun setAlarm(epochSec: Long): M5Status =
@@ -158,26 +222,35 @@ object M5Link {
         val manager = context.getSystemService(BluetoothManager::class.java)
         while (scope.isActive) {
             val adapter = manager.adapter
+            val qr = pendingQr
+            val pairing = PairingStore.load(context)
+            val devId = qr?.devId ?: pairing?.devId
             val error = when {
                 requiredPermissions().any {
                     context.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
                 } -> "Bluetooth の権限を許可してください"
                 adapter == null -> "この端末は Bluetooth に対応していません"
                 !adapter.isEnabled -> "Bluetooth をオンにしてください"
+                devId == null -> "ホームの「デバイスを追加」から M5Stack の QR を読み取ってください"
                 else -> null
             }
-            if (error != null) {
+            if (error != null || devId == null) {
                 StatusHolder.error.value = error
-                delay(3_000)
+                delay(if (devId == null) 1_000 else 3_000)
                 continue
             }
             try {
-                val device = scan(adapter.bluetoothLeScanner ?: throw IOException("scanner unavailable"))
+                val device = scan(adapter.bluetoothLeScanner ?: throw IOException("scanner unavailable"), devId)
                 if (device == null) {
                     StatusHolder.error.value = "M5Stack が見つかりません（電源と距離を確認）"
                 } else {
-                    session(context, device)
+                    session(context, device, devId, qr, pairing)
                 }
+            } catch (e: PairingException) {
+                Log.w(TAG, "pairing failed: ${e.message}")
+                if (pendingQr === qr) pendingQr = null
+                pairDone?.completeExceptionally(e)
+                StatusHolder.error.value = e.message
             } catch (e: Exception) {
                 Log.w(TAG, "session ended: $e")
             }
@@ -186,11 +259,13 @@ object M5Link {
         }
     }
 
-    private suspend fun scan(scanner: android.bluetooth.le.BluetoothLeScanner): BluetoothDevice? {
+    /** QR で登録した M5Stack だけを探す（会場にほかの M5Stack があってもつながらない） */
+    private suspend fun scan(scanner: android.bluetooth.le.BluetoothLeScanner, devId: String): BluetoothDevice? {
         val found = CompletableDeferred<BluetoothDevice>()
+        val name = NAME_PREFIX + devId
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                found.complete(result.device)
+                if (result.scanRecord?.deviceName == name) found.complete(result.device)
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -208,7 +283,13 @@ object M5Link {
         }
     }
 
-    private suspend fun session(context: Context, device: BluetoothDevice) {
+    private suspend fun session(
+        context: Context,
+        device: BluetoothDevice,
+        devId: String,
+        qr: SecureChannel.PairingQr?,
+        saved: SecureChannel.Pairing?,
+    ) {
         val ready = CompletableDeferred<Unit>()
         val disconnected = CompletableDeferred<Unit>()
         val callback = object : BluetoothGattCallback() {
@@ -245,16 +326,17 @@ object M5Link {
 
             // Android 13 以降
             override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
-                onStatus(value)
+                onFrame(value)
             }
 
             // Android 12 以前
             @Deprecated("Deprecated in Java")
             override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) @Suppress("DEPRECATION") onStatus(c.value)
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) @Suppress("DEPRECATION") onFrame(c.value)
             }
         }
 
+        while (handshakeFrames.tryReceive().isSuccess) Unit  // 前の接続のフレームを捨てる
         val g = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
         gatt = g
         try {
@@ -265,9 +347,10 @@ object M5Link {
 
             g.setCharacteristicNotification(statusChar, true)
             writeDescriptor(g, statusChar.getDescriptor(CCCD_UUID), BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+            handshake(context, devId, qr, saved)
             sendTime()
             StatusHolder.error.value = null
-            Log.i(TAG, "connected to ${device.address}")
+            Log.i(TAG, "connected to ${device.address} (encrypted)")
 
             var lastTimeSyncMs = System.currentTimeMillis()
             while (!disconnected.isCompleted) {
@@ -280,6 +363,7 @@ object M5Link {
                 }
             }
         } finally {
+            session = null
             gatt = null
             commandChar = null
             g.disconnect()
@@ -287,10 +371,91 @@ object M5Link {
         }
     }
 
-    private fun onStatus(value: ByteArray) {
+    /** QR があれば登録してから、登録済みの鍵で認証する（secure_link.h の手順） */
+    private suspend fun handshake(
+        context: Context,
+        devId: String,
+        qr: SecureChannel.PairingQr?,
+        saved: SecureChannel.Pairing?,
+    ) {
+        val hello = withTimeout(Config.BLE_CONNECT_TIMEOUT_MS) {
+            var h: SecureChannel.Hello? = null
+            while (h == null) h = SecureChannel.parseHello(handshakeFrames.receive())
+            h
+        }
+        if (hello.devId != devId) throw IOException("別の M5Stack です (${hello.devId})")
+        // QR を読んでいないのに M5Stack が再接続モード → 登録をやり直してもらう
+        if (qr == null && hello.pairing) {
+            dropPairing()
+            throw IOException("M5Stack is in pairing mode")
+        }
+
+        var pairing = saved
+        if (qr != null) {
+            if (!hello.pairing) throw PairingException("M5Stack の QR の表示が終わっています。C ボタン長押しで出し直してください")
+            val (frame, newPairing) = SecureChannel.buildPair(qr)
+            writeRaw { frame }
+            val result = withTimeout(Config.BLE_COMMAND_TIMEOUT_MS) {
+                var r: Int? = null
+                while (r == null) {
+                    val f = handshakeFrames.receive()
+                    if (f.size == 2 && f[0] == SecureChannel.FRAME_PAIR_RESULT) r = f[1].toInt()
+                }
+                r
+            }
+            if (result != SecureChannel.PAIR_OK) {
+                throw PairingException(
+                    if (result == 2) "QR が古いか読み取りが違います。M5Stack に表示中の QR を読み直してください"
+                    else "M5Stack が登録を受け付けませんでした ($result)",
+                )
+            }
+            pairing = newPairing
+        }
+        if (pairing == null) throw IOException("not paired")
+
+        val (auth, newSession) = SecureChannel.buildAuth(pairing, hello)
+        session = newSession
+        val sentAt = System.currentTimeMillis()
+        writeRaw { auth }
+        // 認証できれば暗号化された状態が届く。だめなら AUTH_FAIL が届く
+        withTimeout(Config.BLE_COMMAND_TIMEOUT_MS) {
+            while (lastStatusMs < sentAt) {
+                val f = handshakeFrames.tryReceive().getOrNull()
+                if (f != null && f.isNotEmpty() && f[0] == SecureChannel.FRAME_AUTH_FAIL) {
+                    session = null
+                    StatusHolder.error.value = "M5Stack 側でこのスマホの登録が消えています。デバイス画面で登録を解除し、もう一度追加してください"
+                    throw IOException("auth rejected")
+                }
+                delay(50)
+            }
+        }
+        if (qr != null) {
+            PairingStore.save(context, pairing)
+            if (pendingQr === qr) pendingQr = null
+            pairDone?.complete(Unit)
+            Log.i(TAG, "paired with $devId")
+        }
+    }
+
+    private fun onFrame(value: ByteArray) {
+        if (value.isEmpty()) return
+        if (value[0] != SecureChannel.FRAME_DATA) {
+            handshakeFrames.trySend(value)
+            return
+        }
+        val s = session ?: return
         try {
-            StatusHolder.status.value = parseStatus(String(value))
+            val status = parseStatus(s.open(value))
+            // M5Stack が再接続モードになった（右ボタン長押し）→ このスマホの登録も解除する
+            if (status.pairingMode && pendingQr == null) {
+                dropPairing()
+                return
+            }
+            StatusHolder.status.value = status
             lastStatusMs = System.currentTimeMillis()
+        } catch (e: SecurityException) {
+            // 改ざん・リプレイ・偽の M5Stack。信用せず、届かなかったものとして扱う
+            Log.w(TAG, "rejected frame: ${e.message}")
         } catch (e: Exception) {
             Log.w(TAG, "bad status (${value.size} bytes): ${e.message}")
         }
@@ -298,10 +463,15 @@ object M5Link {
 
     // ---- GATT 操作（同時に1つしか実行できないので直列化する） ----
 
-    private suspend fun write(text: String) = gattOp {
+    /** 暗号化して送る。カウンタの順に届くよう、暗号化も直列化の中で行う */
+    private suspend fun write(text: String) = writeRaw {
+        (session ?: throw IOException("M5Stack に接続していません")).seal(text)
+    }
+
+    private suspend fun writeRaw(frame: () -> ByteArray) = gattOp {
         val g = gatt ?: throw IOException("M5Stack に接続していません")
         val c = commandChar ?: throw IOException("M5Stack に接続していません")
-        val bytes = text.toByteArray()
+        val bytes = frame()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             g.writeCharacteristic(c, bytes, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
                 BluetoothStatusCodes.SUCCESS
@@ -366,6 +536,7 @@ object M5Link {
             ackSeq = k?.optInt(0) ?: 0,
             ackError = k?.optString(1).orEmpty(),
             config = j.optJSONArray("c")?.let { M5Config(threshold = it.getInt(0), wakeConfirmSec = it.getInt(1)) },
+            pairingMode = j.optInt("p") == 1,
         )
     }
 }

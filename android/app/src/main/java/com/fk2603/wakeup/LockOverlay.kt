@@ -26,8 +26,9 @@ import kotlinx.coroutines.delay
  * ロック中に他のアプリの上に出す全画面オーバーレイ（Compose で描く）
  * - アラーム中: AlarmScreen
  * - ベッドにいる間: LockScreen（onHome があれば「ホームに戻る」を出す）
+ * どちらにも「緊急解除」ボタン（2回押し）を出し、押されたら onEmergency を呼ぶ
  */
-class LockOverlay(private val context: Context) {
+class LockOverlay(private val context: Context, private val onEmergency: () -> Unit) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private var root: ComposeView? = null
     private var owner: OverlayOwner? = null
@@ -61,7 +62,8 @@ class LockOverlay(private val context: Context) {
                         }
                     }
                     val s = ui ?: return@DopaTheme
-                    if (s.alarm) AlarmScreen(s, nowSec) else LockScreen(s, onHome = onHome)
+                    if (s.alarm) AlarmScreen(s, nowSec, onEmergency = onEmergency)
+                    else LockScreen(s, onHome = onHome, onEmergency = onEmergency)
                 }
             }
         }

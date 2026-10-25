@@ -8,18 +8,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.LocalFireDepartment
@@ -60,32 +56,36 @@ fun ClearScreen(ui: ClearUi, onDone: () -> Unit) {
         (if (filled) minOf(afterRaw, per) else before) / per.toFloat(), tween(1000), label = "xp",
     )
 
-    Column(Modifier.fillMaxSize().background(Dopa.Background).verticalScroll(rememberScrollState())) {
+    // スクロールせず1画面に収める（監視員の画像が余った高さを使う）
+    Column(Modifier.fillMaxSize().background(Dopa.Background)) {
         Marquee("MISSION CLEAR ドパ解放")
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            Modifier.fillMaxWidth().weight(1f).padding(horizontal = 20.dp).padding(top = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
             // 中抜き文字
             Text(
-                "MISSION", fontFamily = Dopa.Display, fontSize = 44.sp, lineHeight = 44.sp, color = Dopa.Foreground,
-                style = TextStyle(drawStyle = Stroke(width = 4f)),
+                "MISSION", fontFamily = Dopa.Display, fontSize = 40.sp, lineHeight = 40.sp, color = Dopa.Foreground,
+                style = TextStyle(drawStyle = Stroke(width = 4f)), maxLines = 1,
             )
-            DisplayText("CLEAR!!", 56.sp, Modifier.stamp(), color = Dopa.Lime)
-            Box(Modifier.widthIn(max = 240.dp).fillMaxWidth().padding(top = 8.dp)) {
-                Watcher(WatcherMood.CLEAR, Modifier.fillMaxWidth().aspectRatio(1f).rise())
+            FitText("CLEAR!!", 52.sp, Modifier.stamp(), color = Dopa.Lime)
+            Box(Modifier.weight(1f).aspectRatio(1f, matchHeightConstraintsFirst = true).padding(top = 8.dp)) {
+                Watcher(WatcherMood.CLEAR, Modifier.fillMaxSize().rise())
                 Box(
-                    Modifier.align(Alignment.TopEnd).offset(x = 16.dp, y = 16.dp).stamp(250).size(80.dp)
+                    Modifier.align(Alignment.TopEnd).offset(x = 16.dp, y = 8.dp).stamp(250).size(72.dp)
                         .clip(CircleShape).background(Dopa.Background).border(4.dp, Dopa.Lime, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    DisplayText(ui.rank.name, 48.sp, color = Dopa.Lime, lineHeight = 48.sp)
+                    DisplayText(ui.rank.name, 44.sp, color = Dopa.Lime, lineHeight = 44.sp)
                 }
                 TalkLabel(
                     if (ui.resleep) "…二度寝は許してない。" else "…まあ、やるじゃん。",
-                    Modifier.align(Alignment.BottomStart).offset(x = (-8).dp, y = (-24).dp),
+                    Modifier.align(Alignment.BottomStart).offset(x = (-8).dp, y = (-16).dp),
                     rotation = -6f, shadow = Dopa.Background, fontSize = 12.sp,
                 )
             }
         }
-        Row(Modifier.padding(horizontal = 20.dp).padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.padding(horizontal = 20.dp).padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(
                 Triple(Icons.Rounded.Timer, "離床タイム", formatMinSec(ui.seconds)),
                 Triple(Icons.Rounded.LocalFireDepartment, "連続起床", "${ui.streak}日"),
@@ -93,8 +93,8 @@ fun ClearScreen(ui: ClearUi, onDone: () -> Unit) {
             ).forEachIndexed { i, (icon, label, value) ->
                 DopaCard(Modifier.weight(1f).rise(300 + i * 100), radius = 16.dp, padding = androidx.compose.foundation.layout.PaddingValues(12.dp)) {
                     Icon(icon, null, tint = Dopa.Lime, modifier = Modifier.size(16.dp))
-                    Text(label, fontSize = 10.sp, color = Dopa.Muted, modifier = Modifier.padding(top = 8.dp))
-                    DisplayText(value, 18.sp, maxLines = 1)
+                    Text(label, fontSize = 10.sp, color = Dopa.Muted, modifier = Modifier.padding(top = 6.dp))
+                    FitText(value, 18.sp)
                 }
             }
         }
@@ -115,10 +115,22 @@ fun ClearScreen(ui: ClearUi, onDone: () -> Unit) {
                 fontSize = 11.sp, color = Dopa.Muted,
             )
         }
-        Spacer(Modifier.height(24.dp))
-        BigLimeButton("スマホを解放する", onDone, Modifier.padding(20.dp).padding(bottom = 12.dp), fontSize = 18.sp)
+        // ベッドを出たら、その日の予定（朝のルーティン）を出す
+        if (ui.routine.isNotEmpty()) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 12.dp)
+                    .clip(RoundedCornerShape(16.dp)).background(Dopa.Lime).padding(horizontal = 16.dp, vertical = 12.dp),
+            ) {
+                Text("今日の予定｜これを目標に動き出そう！", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Dopa.LimeForeground)
+                ui.routine.take(4).forEach {
+                    Text("☐ $it", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Dopa.LimeForeground, maxLines = 1)
+                }
+                if (ui.routine.size > 4) Text("ほか${ui.routine.size - 4}件", fontSize = 11.sp, color = Dopa.LimeForeground)
+            }
+        }
+        BigLimeButton("スマホを解放する", onDone, Modifier.padding(horizontal = 20.dp).padding(top = 16.dp, bottom = 14.dp), fontSize = 18.sp)
         Text(
-            if (ui.demo) "デモ：記録には残りません" else "記録はランキングに送信されます", Modifier.fillMaxWidth().padding(bottom = 24.dp),
+            if (ui.demo) "デモ：記録には残りません" else "記録はランキングに送信されます", Modifier.fillMaxWidth().padding(bottom = 12.dp),
             fontSize = 10.sp, color = Dopa.Muted, textAlign = TextAlign.Center, fontWeight = FontWeight.Normal,
         )
     }

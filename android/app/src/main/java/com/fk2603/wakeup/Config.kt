@@ -16,6 +16,9 @@ object Config {
     /** コマンドを送ってから結果が返るまでの上限 */
     const val BLE_COMMAND_TIMEOUT_MS = 5_000L
 
+    /** QR を読んでから M5Stack の登録が終わるまでの上限（M5Stack の QR 表示は120秒） */
+    const val PAIR_TIMEOUT_MS = 45_000L
+
     /** 接続が切れてから再接続を試みるまで */
     const val BLE_RECONNECT_DELAY_MS = 3_000L
 
@@ -28,9 +31,15 @@ object Config {
     /** ロック中に M5Stack と通信できない状態がこの時間続いたらロックを解除する（電源断で永久ロックを防ぐ） */
     const val UNLOCK_IF_UNREACHABLE_SEC = 5 * 60L
 
-    /** ランキングに表示する件数 */
-    const val RANKING_LIMIT = 50L
+    /** 緊急解除でロックを外す時間 */
+    const val EMERGENCY_UNLOCK_SEC = 5 * 60L
 
-    /** Firestore のコレクション名 */
-    const val RECORDS_COLLECTION = "records"
+    /** 緊急解除ボタンは、押してからこの時間内にもう一度押すと解除（誤タップ防止） */
+    const val EMERGENCY_CONFIRM_MS = 5_000L
+
+    /** 1日の区切り（時）。夜中の緊急解除を「前の晩」として数えるため朝4時にする */
+    const val DAY_START_HOUR = 4
+
+    /** ベッドを出てこの秒数たったらロックを外す（M5Stack の起床確認を待たない。戻れば即ロック） */
+    const val UNLOCK_AFTER_LEAVE_BED_SEC = 3L
 }

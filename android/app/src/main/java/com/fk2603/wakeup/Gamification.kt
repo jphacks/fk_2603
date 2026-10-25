@@ -1,10 +1,8 @@
 package com.fk2603.wakeup
 
-import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.temporal.TemporalAdjusters
 
 /**
  * 起床記録から XP・レベル・連続日数・バッジを計算する（保存はせず、毎回記録から作り直す）
@@ -49,7 +47,7 @@ object Gamification {
         val title: Badge?,
         /** 直近7回の平均ランク */
         val recentRank: Rank?,
-        /** 今週（月〜日）。記録のない日は null */
+        /** 直近7日（6日前〜今日）。記録のない日は null */
         val week: List<Pair<LocalDate, Day?>>,
     ) {
         val level get() = xp / XP_PER_LEVEL
@@ -70,7 +68,6 @@ object Gamification {
             (now - owned).lastOrNull()?.let { title = it }
             owned = now
         }
-        val monday = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
         val byDate = days.associateBy { it.date }
         return Progress(
             xp = sorted.sumOf { xpFor(it) },
@@ -80,7 +77,7 @@ object Gamification {
             title = title,
             recentRank = wakes.takeLast(7).takeIf { it.isNotEmpty() }
                 ?.let { recent -> rankFor(recent.sumOf { it.durationSec } / recent.size) },
-            week = (0L until 7L).map { monday.plusDays(it) }.map { it to byDate[it] },
+            week = (6L downTo 0L).map { today.minusDays(it) }.map { it to byDate[it] },
         )
     }
 
