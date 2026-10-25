@@ -229,7 +229,7 @@ private fun NextMission(ui: HomeUi, nowSec: Long, onEditRoutine: () -> Unit, onT
 private fun WatcherCard(ui: HomeUi, modifier: Modifier) {
     DopaCard(modifier, padding = PaddingValues(0.dp)) {
         Box(Modifier.fillMaxSize()) {
-            Watcher(WatcherMood.SLEEPY, Modifier.fillMaxSize().padding(top = 24.dp).floating())
+            Watcher(WatcherMood.SLEEPY, Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, top = 42.dp, bottom = 12.dp).floating())
             SpeechBubble(
                 if (ui.inBed) "「布団に負けるなよ。」" else "「今日もやるぞ。」",
                 Modifier.padding(start = 12.dp, top = 4.dp).width(170.dp).height(60.dp),

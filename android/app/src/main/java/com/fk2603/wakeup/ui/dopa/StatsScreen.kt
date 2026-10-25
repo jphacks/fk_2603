@@ -96,8 +96,8 @@ private val BADGE_ROTATIONS = listOf(-3f, 2f, -1f, 3f, -2f, 1f)
 private fun PlayerCard(ui: StatsUi) {
     val p = ui.progress
     DopaCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp), radius = 24.dp) {
-        Row(Modifier.fillMaxWidth().height(116.dp)) {
-            Column(Modifier.weight(1f).padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Row(Modifier.fillMaxWidth().height(220.dp)) {
+            Column(Modifier.weight(1f).padding(16.dp)) {
                 Sticker("称号：${p.title?.label ?: "見習いドパガキ"}", rotation = -2f)
                 VSpace(6.dp)
                 DisplayText(ui.nickname.ifBlank { "名無し" }, 18.sp)
@@ -107,7 +107,14 @@ private fun PlayerCard(ui: StatsUi) {
                     LabeledValue("RANK", p.recentRank?.name ?: "-", Dopa.Foreground)
                 }
             }
-            Watcher(WatcherMood.CLEAR, Modifier.width(116.dp).fillMaxHeight())
+            Watcher(
+                WatcherMood.CLEAR,
+                Modifier
+                    .width(145.dp)
+                    .fillMaxHeight()
+                    .padding(vertical = 12.dp)
+                    .padding(end = 8.dp)
+            )
         }
         HorizontalDivider(color = Dopa.Border)
         Row(Modifier.fillMaxWidth()) {

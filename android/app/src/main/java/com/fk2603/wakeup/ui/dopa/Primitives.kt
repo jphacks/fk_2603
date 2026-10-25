@@ -80,7 +80,7 @@ fun Watcher(mood: WatcherMood, modifier: Modifier = Modifier) {
     Image(
         painter = painterResource(mood.res),
         contentDescription = "ドパ監視員",
-        contentScale = ContentScale.Crop,
+        contentScale = ContentScale.Fit,
         modifier = modifier,
     )
 }
