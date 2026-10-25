@@ -62,67 +62,99 @@ fun ClearScreen(ui: ClearUi, onDone: () -> Unit) {
 
     Column(Modifier.fillMaxSize().background(Dopa.Background).verticalScroll(rememberScrollState())) {
         Marquee("MISSION CLEAR ドパ解放")
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            // 中抜き文字
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(top = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // MISSION
             Text(
-                "MISSION", fontFamily = Dopa.Display, fontSize = 44.sp, lineHeight = 44.sp, color = Dopa.Foreground,
-                style = TextStyle(drawStyle = Stroke(width = 4f)),
+                text = "MISSION",
+                fontFamily = Dopa.Display,
+                fontSize = 34.sp,
+                lineHeight = 36.sp,
+                color = Dopa.Foreground,
+                style = TextStyle(
+                    drawStyle = Stroke(width = 3f)
+                ),
+                maxLines = 1
             )
-            DisplayText("CLEAR!!", 56.sp, Modifier.stamp(), color = Dopa.Lime)
 
-            // キャラクター・ランク・セリフを重ねて表示する
-                        Box(
-                            modifier = Modifier
-                                .widthIn(max = 240.dp)
-                                .fillMaxWidth()
-                                .padding(top = 8.dp)
-                        ) {
-                            // キャラクター
-                            Watcher(
-                                WatcherMood.CLEAR,
-                                Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(1f)
-                                    .rise()
-                            )
+            // CLEAR!!
+            DisplayText(
+                "CLEAR!!",
+                44.sp,
+                Modifier.stamp(),
+                color = Dopa.Lime
+            )
 
-                            // Aランクの丸
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .offset(x = 16.dp, y = 16.dp)
-                                    .stamp(250)
-                                    .size(80.dp)
-                                    .clip(CircleShape)
-                                    .background(Dopa.Background)
-                                    .border(4.dp, Dopa.Lime, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = ui.rank.name,
-                                    fontFamily = Dopa.Display,
-                                    fontSize = 48.sp,
-                                    lineHeight = 48.sp,
-                                    color = Dopa.Lime,
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 1,
-                                    modifier = Modifier.offset(y = (-3).dp)
-                                )
-                            }
+            Spacer(Modifier.height(12.dp))
 
-                            // キャラクターのセリフ
-                            TalkLabel(
-                                if (ui.resleep) "…二度寝は許してない。" else "…まあ、やるじゃん。",
-                                Modifier
-                                    .align(Alignment.BottomStart)
-                                    .offset(x = (-8).dp, y = (-24).dp),
-                                rotation = -6f,
-                                shadow = Dopa.Background,
-                                fontSize = 12.sp
-                            )
-                        }
+            // キャラクター・ランク・セリフ
+            Box(
+                modifier = Modifier
+                    .widthIn(max = 220.dp)
+                    .fillMaxWidth()
+                    .height(220.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                // キャラクター
+                Watcher(
+                    WatcherMood.CLEAR,
+                    Modifier
+                        .size(190.dp)
+                        .rise()
+                )
+
+                // ランク表示
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 0.dp, y = 0.dp)
+                        .stamp(250)
+                        .size(65.dp)
+                        .clip(CircleShape)
+                        .background(Dopa.Background)
+                        .border(3.dp, Dopa.Lime, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = ui.rank.name,
+                        fontFamily = Dopa.Display,
+                        fontSize = 38.sp,
+                        lineHeight = 40.sp,
+                        color = Dopa.Lime,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        modifier = Modifier.offset(y = (-2).dp)
+                    )
+                }
+
+                // キャラクターのセリフ
+                TalkLabel(
+                    if (ui.resleep) {
+                        "…二度寝は許してない。"
+                    } else {
+                        "…まあ、やるじゃん。"
+                    },
+                    Modifier
+                        .align(Alignment.BottomCenter)
+                        .offset(y = (-4).dp),
+                    rotation = -6f,
+                    shadow = Dopa.Background,
+                    fontSize = 11.sp
+                )
+            }
         }
-        Row(Modifier.padding(horizontal = 20.dp).padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(top = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             listOf(
                 Triple(Icons.Rounded.Timer, "離床タイム", formatMinSec(ui.seconds)),
                 Triple(Icons.Rounded.LocalFireDepartment, "連続起床", "${ui.streak}日"),
