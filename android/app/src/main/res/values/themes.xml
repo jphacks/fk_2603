@@ -1,3 +1,8 @@
 <resources>
-    <style name="Theme.WakeUp" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- 起動時に白く光らないよう、アプリの背景（#0a0a0a）と合わせる -->
+    <style name="Theme.WakeUp" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/dopa_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
 </resources>

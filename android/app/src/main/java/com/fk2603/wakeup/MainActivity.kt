@@ -1,29 +1,24 @@
 package com.fk2603.wakeup
 
 import android.Manifest
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import com.fk2603.wakeup.ui.HomeScreen
-import com.fk2603.wakeup.ui.RecordsScreen
+import androidx.activity.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.fk2603.wakeup.ui.AppViewModel
+import com.fk2603.wakeup.ui.dopa.AppShell
+import com.fk2603.wakeup.ui.theme.DopaTheme
 
 class MainActivity : ComponentActivity() {
+    private val vm: AppViewModel by viewModels()
+
     private val permissionRequest =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
@@ -37,23 +32,16 @@ class MainActivity : ComponentActivity() {
         permissionRequest.launch(permissions.toTypedArray())
         MonitorService.start(this)
 
-        val prefs = Prefs(this)
-        enableEdgeToEdge()
+        // 背景が黒なのでステータスバーの文字は白
+        enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
         setContent {
-            MaterialTheme {
-                var tab by remember { mutableIntStateOf(0) }
-                Scaffold { padding ->
-                    Column(Modifier.fillMaxSize().padding(padding)) {
-                        TabRow(selectedTabIndex = tab) {
-                            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("アラーム") })
-                            Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("記録・ランキング") })
-                        }
-                        when (tab) {
-                            0 -> HomeScreen(prefs)
-                            1 -> RecordsScreen()
-                        }
-                    }
+            DopaTheme {
+                // 設定画面から戻ったら権限と記録を確認し直す
+                LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                    vm.refreshPermissions()
+                    vm.refreshRecords()
                 }
+                AppShell(vm)
             }
         }
     }

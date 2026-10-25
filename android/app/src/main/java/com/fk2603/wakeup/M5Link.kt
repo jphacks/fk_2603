@@ -65,7 +65,21 @@ data class M5Status(
     val sleepEvent: SleepEvent?,
     val ackSeq: Int,
     val ackError: String,
+    val config: M5Config?,  // 古いファームでは null
 )
+
+/** M5Stack の判定設定（アプリから変更できる） */
+data class M5Config(
+    val threshold: Int,       // 在床しきい値（raw 0-4095）
+    val wakeConfirmSec: Int,  // ベッドを出てこの秒数で起床
+) {
+    companion object {
+        const val RAW_MAX = 4095
+        // wakeup_alarm.ino の範囲と合わせる
+        val THRESHOLD_RANGE = 100..3500
+        val WAKE_CONFIRM_RANGE = 5..300
+    }
+}
 
 class M5Exception(message: String) : Exception(message)
 
@@ -114,6 +128,10 @@ object M5Link {
         command(JSONObject().put("cmd", "set").put("epoch", epochSec))
 
     suspend fun cancelAlarm(): M5Status = command(JSONObject().put("cmd", "cancel"))
+
+    /** 在床しきい値と起床確認時間を変更（ベッドにいる間・アラーム中は M5Exception("locked")） */
+    suspend fun setConfig(threshold: Int, wakeConfirmSec: Int): M5Status =
+        command(JSONObject().put("cmd", "config").put("th", threshold).put("wc", wakeConfirmSec))
 
     /** 睡眠イベントを受け取ったと知らせる（M5Stack は次のイベントを送る） */
     suspend fun ackSleepEvent(id: Long) {
@@ -347,6 +365,7 @@ object M5Link {
             },
             ackSeq = k?.optInt(0) ?: 0,
             ackError = k?.optString(1).orEmpty(),
+            config = j.optJSONArray("c")?.let { M5Config(threshold = it.getInt(0), wakeConfirmSec = it.getInt(1)) },
         )
     }
 }

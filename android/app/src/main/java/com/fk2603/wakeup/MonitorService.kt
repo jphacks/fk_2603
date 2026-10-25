@@ -16,6 +16,7 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.fk2603.wakeup.ui.dopa.LockUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -46,6 +47,8 @@ class MonitorService : Service() {
     private var nextUploadRetryMs = 0L
     private var uploadBackoffMs = UPLOAD_RETRY_MIN_MS
     private var acking = false
+    private lateinit var blocker: AppBlocker
+    private var inBedSinceMs = 0L
 
     // 画面ロックを解除した瞬間にロック画面を出す（1秒ごとの判定を待たない）
     private val screenReceiver = object : BroadcastReceiver() {
@@ -58,6 +61,7 @@ class MonitorService : Service() {
         super.onCreate()
         prefs = Prefs(this)
         overlay = LockOverlay(this)
+        blocker = AppBlocker(this)
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification(),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -86,13 +90,22 @@ class MonitorService : Service() {
 
     private suspend fun lockLoop() {
         while (scope.isActive) {
-            StatusHolder.status.value?.lastResult?.let { uploadIfNew(it) }
-            StatusHolder.status.value?.sleepEvent?.let { receiveSleepEvent(it) }
+            val s = StatusHolder.status.value
+            s?.lastResult?.let { uploadIfNew(it) }
+            s?.sleepEvent?.let { receiveSleepEvent(it) }
+            // 届いたばかりの値だけをグラフに残す（切断中に古い値を足さない）
+            if (s != null && System.currentTimeMillis() - M5Link.lastStatusMs < PRESSURE_FRESH_MS) {
+                PressureLog.add(this, s.pressureRaw)
+            }
             evaluateLock()
             delay(LOCK_CHECK_INTERVAL_MS)
         }
     }
 
+    /**
+     * - アラーム中（M5Stack と切れたまま時刻を過ぎた場合も）: スマホ全体をロック
+     * - ベッドにいる間: 前面のアプリが封印する種類のときだけロック（使用状況へのアクセスがなければ全体をロック）
+     */
     private fun evaluateLock() {
         val s = StatusHolder.status.value
         val now = System.currentTimeMillis()
@@ -104,12 +117,45 @@ class MonitorService : Service() {
         val alarmMs = (s?.alarmEpoch ?: 0L) * 1000
         val alarmPassedWhileAway = s != null && s.state in ALARM_PENDING_STATES && alarmMs > 0 &&
             lastStatusMs < alarmMs && now >= alarmMs && now - alarmMs < unlockAfterMs
+        val alarmLock = (lockedByM5 && s?.state in ALARM_ACTIVE_STATES) || alarmPassedWhileAway
+        val bedLock = lockedByM5 && !alarmLock
 
-        if ((lockedByM5 || alarmPassedWhileAway) && Settings.canDrawOverlays(this)) {
-            overlay.show(s)
+        if (s?.inBed == true) {
+            if (inBedSinceMs == 0L) inBedSinceMs = now
         } else {
-            overlay.hide()
+            inBedSinceMs = 0L
         }
+
+        val appLevel = blocker.hasUsageAccess()
+        val blocked = prefs.blockedCategories
+        val show = Settings.canDrawOverlays(this) && when {
+            alarmLock -> true
+            bedLock -> !appLevel || blocker.isForegroundBlocked(blocked)
+            else -> false
+        }
+        if (!show || s == null) {
+            overlay.hide()
+            return
+        }
+        val ui = LockUi(
+            alarm = alarmLock,
+            resleep = s.state == "RESLEEP_ARMED",
+            connected = now - lastStatusMs < Config.BLE_STALE_MS,
+            inBedSec = if (inBedSinceMs > 0) (now - inBedSinceMs) / 1000 else 0,
+            pressureRaw = s.pressureRaw,
+            threshold = s.config?.threshold ?: DEFAULT_THRESHOLD,
+            inBed = s.inBed,
+            blocked = blocked,
+        )
+        // アプリ単位の封印なら、ホーム画面に戻れば他のアプリは使える
+        overlay.show(ui, if (bedLock && appLevel) ::goHome else null)
+    }
+
+    private fun goHome() {
+        startActivity(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        overlay.hide()
     }
 
     // 睡眠イベントを端末に保存してから M5Stack に受け取ったと知らせる（届かなければ次の状態でもう一度）
@@ -145,6 +191,7 @@ class MonitorService : Service() {
                 prefs.lastUploadedKey = key
                 uploadBackoffMs = UPLOAD_RETRY_MIN_MS
                 Log.i(TAG, "uploaded $key")
+                MyRecords.refresh()  // 戦績・ランキングに反映
             } catch (e: Exception) {
                 Log.w(TAG, "upload failed, retry in ${uploadBackoffMs / 1000}s: ${e.message}")
                 nextUploadRetryMs = System.currentTimeMillis() + uploadBackoffMs
@@ -165,7 +212,7 @@ class MonitorService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_alarm)
-            .setContentTitle("二度寝防止アラーム")
+            .setContentTitle(getString(R.string.app_name))
             .setContentText("M5Stack を監視中")
             .setContentIntent(pi)
             .setOngoing(true)
@@ -182,6 +229,14 @@ class MonitorService : Service() {
 
         /** alarmEpoch が「次に鳴る時刻」を表す状態（WAITING の alarmEpoch は待ちの期限なので除く） */
         private val ALARM_PENDING_STATES = setOf("ARMED", "AWAKE", "RESLEEP_ARMED")
+
+        /** 鳴動中・二度寝検出中（スマホ全体をロックする） */
+        private val ALARM_ACTIVE_STATES = setOf("RINGING", "RESLEEP_ARMED")
+
+        private const val PRESSURE_FRESH_MS = 3_000L
+
+        /** 古いファームで設定が届かないときの在床しきい値（wakeup_alarm.ino の IN_BED_THRESHOLD） */
+        private const val DEFAULT_THRESHOLD = 300
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, MonitorService::class.java))

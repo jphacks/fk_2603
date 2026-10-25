@@ -23,6 +23,7 @@
 #include <BLEServer.h>
 #include <BLE2902.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -38,12 +39,16 @@ const uint32_t STATUS_NOTIFY_MS = 1000;  // 接続中に状態を送る間隔
 
 // --- 圧力センサ ---
 const int FSR_PIN = 36;               // ADC1
-const int IN_BED_THRESHOLD = 300;     // raw(0-4095) がこれ以上なら「ベッドにいる」
+const int IN_BED_THRESHOLD = 300;     // raw(0-4095) がこれ以上なら「ベッドにいる」（初期値。アプリから変更できる）
+const int IN_BED_THRESHOLD_MIN = 100; // アプリから設定できる範囲
+const int IN_BED_THRESHOLD_MAX = 3500;
 const int IN_BED_HYSTERESIS = 50;     // 閾値付近でのばたつき防止（THRESHOLD - これ 未満で「いない」）
 const int FSR_SAMPLES = 8;            // 平均を取るサンプル数
 
 // --- 時間設定（秒）---
-const uint32_t WAKE_CONFIRM_SEC = 10;            // 圧力なしがこの秒数続いたら「起床」（音はベッドを出た瞬間に止まる）
+const uint32_t WAKE_CONFIRM_SEC = 10;            // 圧力なしがこの秒数続いたら「起床」（音はベッドを出た瞬間に止まる。初期値。アプリから変更できる）
+const uint32_t WAKE_CONFIRM_SEC_MIN = 5;         // アプリから設定できる範囲
+const uint32_t WAKE_CONFIRM_SEC_MAX = 300;
 const uint32_t BED_WAIT_SEC = 10 * 60;           // アラーム時刻にベッドにいなければ、この時間内にベッドに入ったら鳴らす
 const uint32_t SESSION_GAP_SEC = 20 * 60;        // ベッドを出てこの時間内に戻れば同じ睡眠が続いているとみなす
 const uint32_t SLEEP_START_CONFIRM_SEC = 20 * 60; // 圧力ありがこの秒数続いたら睡眠開始（開始時刻はベッドに入った瞬間）
@@ -152,6 +157,11 @@ uint32_t eventCounter = 0;
 bool bedStreak = false;         // ベッドにいる（短い途切れを除く）
 uint32_t bedStreakStartMs = 0;  // その開始
 
+// アプリから変更できる設定（NVS に保存し、電源を切っても残る）
+Preferences settings;
+int inBedThreshold = IN_BED_THRESHOLD;
+uint32_t wakeConfirmSec = WAKE_CONFIRM_SEC;
+
 // 圧力
 int pressureRaw = 0;
 bool inBed = false;
@@ -203,8 +213,8 @@ void readPressure() {
   long sum = 0;
   for (int i = 0; i < FSR_SAMPLES; i++) sum += analogRead(FSR_PIN);
   pressureRaw = sum / FSR_SAMPLES;
-  bool nowInBed = inBed ? pressureRaw >= IN_BED_THRESHOLD - IN_BED_HYSTERESIS
-                        : pressureRaw >= IN_BED_THRESHOLD;
+  bool nowInBed = inBed ? pressureRaw >= inBedThreshold - IN_BED_HYSTERESIS
+                        : pressureRaw >= inBedThreshold;
   if (nowInBed != inBed) {
     inBed = nowInBed;
     bedChangedMs = millis();
@@ -380,7 +390,7 @@ void updateState() {
         }
       } else {
         if (M5.Speaker.isPlaying()) stopSound();
-        if (secSinceBedChange() >= WAKE_CONFIRM_SEC) finishRinging();
+        if (secSinceBedChange() >= wakeConfirmSec) finishRinging();
       }
       break;
 
@@ -408,7 +418,7 @@ void updateState() {
         onAlarmDue();
       } else if (epoch >= resleepEpoch) {
         startRinging(true);
-      } else if (!inBed && secSinceBedChange() >= WAKE_CONFIRM_SEC) {
+      } else if (!inBed && secSinceBedChange() >= wakeConfirmSec) {
         // 鳴る前に起きたので取り消す（監視時間は最初の起床から数え続ける）
         Serial.println("[RESLEEP] cancelled (out of bed)");
         resleepEpoch = 0;
@@ -532,6 +542,7 @@ void drawScreen() {
 //     {"seq":n,"cmd":"set","epoch":<unix秒>}     アラームをセット
 //     {"seq":n,"cmd":"cancel"}                   アラームを解除
 //     {"cmd":"evack","id":n}                     睡眠イベント n を受け取った（次のイベントを送る）
+//     {"seq":n,"cmd":"config","th":<raw>,"wc":<秒>} 在床しきい値と起床確認時間を変更（NVS に保存）
 //   seq 付きのコマンドの結果は、状態 JSON の ack に入る
 // ------------------------------------------------------------
 
@@ -539,6 +550,7 @@ void drawScreen() {
 //   s=状態 l=ロック a=次に鳴る時刻 v=音量 t=現在時刻 r=raw b=ベッドにいる
 //   w=[id, ringAt, awakeAt, durationSec, resleep]（記録なしは null） k=[seq, error]
 //   e=[id, 種類(S=就寝 R=二度寝 E=起床), 時刻]（未送信でいちばん古い睡眠イベント。なしは null）
+//   c=[在床しきい値, 起床確認秒]
 String buildStatusJson() {
   JsonDocument doc;
   doc["s"] = stateName(state);
@@ -571,6 +583,9 @@ String buildStatusJson() {
   JsonArray k = doc["k"].to<JsonArray>();
   k.add(ackSeq);
   k.add(ackError);
+  JsonArray c = doc["c"].to<JsonArray>();
+  c.add(inBedThreshold);
+  c.add(wakeConfirmSec);
   String body;
   serializeJson(doc, body);
   return body;
@@ -603,6 +618,28 @@ const char* doCancelAlarm() {
   return "";
 }
 
+// ベッドにいる間やアラーム中は変えられない（しきい値を下げてロックを抜けるのを防ぐ）
+const char* doConfig(int threshold, long confirmSec) {
+  if (phoneLocked()) return "locked";
+  if (threshold < IN_BED_THRESHOLD_MIN || threshold > IN_BED_THRESHOLD_MAX ||
+      confirmSec < (long)WAKE_CONFIRM_SEC_MIN || confirmSec > (long)WAKE_CONFIRM_SEC_MAX) {
+    return "out of range";
+  }
+  inBedThreshold = threshold;
+  wakeConfirmSec = confirmSec;
+  settings.putInt("th", inBedThreshold);
+  settings.putUInt("wc", wakeConfirmSec);
+  Serial.printf("[BLE] config threshold=%d wakeConfirm=%lus\n", inBedThreshold, (unsigned long)wakeConfirmSec);
+  return "";
+}
+
+void loadSettings() {
+  settings.begin("wakeup", false);
+  inBedThreshold = constrain(settings.getInt("th", IN_BED_THRESHOLD), IN_BED_THRESHOLD_MIN, IN_BED_THRESHOLD_MAX);
+  wakeConfirmSec = constrain(settings.getUInt("wc", WAKE_CONFIRM_SEC), WAKE_CONFIRM_SEC_MIN, WAKE_CONFIRM_SEC_MAX);
+  Serial.printf("[BOOT] threshold=%d wakeConfirm=%lus\n", inBedThreshold, (unsigned long)wakeConfirmSec);
+}
+
 void handleCommand(const char* text) {
   JsonDocument req;
   if (deserializeJson(req, text)) {
@@ -620,6 +657,8 @@ void handleCommand(const char* text) {
     ackEvent(req["id"].as<uint32_t>());
   } else if (strcmp(cmd, "cancel") == 0) {
     err = doCancelAlarm();
+  } else if (strcmp(cmd, "config") == 0) {
+    err = doConfig(req["th"] | -1, req["wc"] | -1L);
   } else {
     err = "unknown command";
   }
@@ -689,6 +728,7 @@ void setup() {
   setenv("TZ", TZ_INFO, 1);
   tzset();
 
+  loadSettings();
   analogReadResolution(12);
   analogSetPinAttenuation(FSR_PIN, ADC_11db);
   readPressure();

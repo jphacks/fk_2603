@@ -1,58 +1,69 @@
 package com.fk2603.wakeup
 
 import android.content.Context
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.view.Gravity
 import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.LinearLayout
-import android.widget.TextView
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.ComposeView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleRegistry
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistry
+import androidx.savedstate.SavedStateRegistryController
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.fk2603.wakeup.ui.dopa.AlarmScreen
+import com.fk2603.wakeup.ui.dopa.LockScreen
+import com.fk2603.wakeup.ui.dopa.LockUi
+import com.fk2603.wakeup.ui.theme.DopaTheme
+import kotlinx.coroutines.delay
 
-/** ベッドにいる間（とアラーム中）は他のアプリを操作できないようにする全画面オーバーレイ */
+/**
+ * ロック中に他のアプリの上に出す全画面オーバーレイ（Compose で描く）
+ * - アラーム中: AlarmScreen
+ * - ベッドにいる間: LockScreen（onHome があれば「ホームに戻る」を出す）
+ */
 class LockOverlay(private val context: Context) {
     private val wm = context.getSystemService(WindowManager::class.java)
-    private var root: LinearLayout? = null
-    private lateinit var detail: TextView
+    private var root: ComposeView? = null
+    private var owner: OverlayOwner? = null
+    private var ui by mutableStateOf<LockUi?>(null)
+    private var onHome by mutableStateOf<(() -> Unit)?>(null)
 
-    fun show(status: M5Status?) {
+    fun show(state: LockUi, home: (() -> Unit)?) {
+        ui = state
+        onHome = home
         if (root == null) attach()
-        val text = when {
-            status == null -> ""
-            status.state == "RINGING" -> "アラーム鳴動中\nベッドから出てください"
-            status.state == "RESLEEP_ARMED" -> "二度寝を検出しました\nベッドから出ないとアラームが鳴ります"
-            status.inBed -> "ベッドから出ると解除されます"
-            else -> "起床を確認中…"
-        }
-        if (detail.text.toString() != text) detail.text = text
     }
 
     fun hide() {
         root?.let { wm.removeView(it) }
+        owner?.destroy()
         root = null
+        owner = null
     }
 
     private fun attach() {
-        val title = TextView(context).apply {
-            text = "ベッドの上では\nスマホは使えません"
-            textSize = 30f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        }
-        detail = TextView(context).apply {
-            textSize = 18f
-            setTextColor(Color.LTGRAY)
-            gravity = Gravity.CENTER
-            setPadding(0, 48, 0, 0)
-        }
-        val view = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.rgb(20, 20, 40))
-            addView(title)
-            addView(detail)
-            // タッチをすべて吸収して下のアプリに渡さない
-            setOnTouchListener { _, _ -> true }
+        val o = OverlayOwner()
+        val view = ComposeView(context).apply {
+            setViewTreeLifecycleOwner(o)
+            setViewTreeSavedStateRegistryOwner(o)
+            setContent {
+                DopaTheme {
+                    val nowSec by produceState(System.currentTimeMillis() / 1000) {
+                        while (true) {
+                            delay(1000)
+                            value = System.currentTimeMillis() / 1000
+                        }
+                    }
+                    val s = ui ?: return@DopaTheme
+                    if (s.alarm) AlarmScreen(s, nowSec) else LockScreen(s, onHome = onHome)
+                }
+            }
         }
         val params = WindowManager.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -65,5 +76,23 @@ class LockOverlay(private val context: Context) {
         )
         wm.addView(view, params)
         root = view
+        owner = o
+    }
+
+    /** Activity の外で Compose を動かすための Lifecycle / SavedState */
+    private class OverlayOwner : SavedStateRegistryOwner {
+        private val registry = LifecycleRegistry(this)
+        private val savedState = SavedStateRegistryController.create(this)
+        override val lifecycle: Lifecycle get() = registry
+        override val savedStateRegistry: SavedStateRegistry get() = savedState.savedStateRegistry
+
+        init {
+            savedState.performRestore(null)
+            registry.currentState = Lifecycle.State.RESUMED
+        }
+
+        fun destroy() {
+            registry.currentState = Lifecycle.State.DESTROYED
+        }
     }
 }
