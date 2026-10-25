@@ -69,21 +69,58 @@ fun ClearScreen(ui: ClearUi, onDone: () -> Unit) {
                 style = TextStyle(drawStyle = Stroke(width = 4f)),
             )
             DisplayText("CLEAR!!", 56.sp, Modifier.stamp(), color = Dopa.Lime)
-            Box(Modifier.widthIn(max = 240.dp).fillMaxWidth().padding(top = 8.dp)) {
-                Watcher(WatcherMood.CLEAR, Modifier.fillMaxWidth().aspectRatio(1f).rise())
-                Box(
-                    Modifier.align(Alignment.TopEnd).offset(x = 16.dp, y = 16.dp).stamp(250).size(80.dp)
-                        .clip(CircleShape).background(Dopa.Background).border(4.dp, Dopa.Lime, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    DisplayText(ui.rank.name, 48.sp, color = Dopa.Lime, lineHeight = 48.sp)
-                }
-                TalkLabel(
-                    if (ui.resleep) "…二度寝は許してない。" else "…まあ、やるじゃん。",
-                    Modifier.align(Alignment.BottomStart).offset(x = (-8).dp, y = (-24).dp),
-                    rotation = -6f, shadow = Dopa.Background, fontSize = 12.sp,
-                )
-            }
+
+            // キャラクター・ランク・セリフを重ねて表示する
+                        Box(
+                            modifier = Modifier
+                                .widthIn(max = 240.dp)
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                        ) {
+                            // キャラクター
+                            Watcher(
+                                WatcherMood.CLEAR,
+                                Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(1f)
+                                    .rise()
+                            )
+
+                            // Aランクの丸
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .offset(x = 16.dp, y = 16.dp)
+                                    .stamp(250)
+                                    .size(80.dp)
+                                    .clip(CircleShape)
+                                    .background(Dopa.Background)
+                                    .border(4.dp, Dopa.Lime, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = ui.rank.name,
+                                    fontFamily = Dopa.Display,
+                                    fontSize = 48.sp,
+                                    lineHeight = 48.sp,
+                                    color = Dopa.Lime,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    modifier = Modifier.offset(y = (-3).dp)
+                                )
+                            }
+
+                            // キャラクターのセリフ
+                            TalkLabel(
+                                if (ui.resleep) "…二度寝は許してない。" else "…まあ、やるじゃん。",
+                                Modifier
+                                    .align(Alignment.BottomStart)
+                                    .offset(x = (-8).dp, y = (-24).dp),
+                                rotation = -6f,
+                                shadow = Dopa.Background,
+                                fontSize = 12.sp
+                            )
+                        }
         }
         Row(Modifier.padding(horizontal = 20.dp).padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf(

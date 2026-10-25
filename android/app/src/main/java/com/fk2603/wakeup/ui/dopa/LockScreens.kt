@@ -209,7 +209,12 @@ fun LockScreen(ui: LockUi, onHome: (() -> Unit)? = null, onLeaveBed: (() -> Unit
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Watcher(WatcherMood.SLEEPY, Modifier.size(64.dp).clip(RoundedCornerShape(16.dp)))
                 HSpace(12.dp)
-                Text(TAUNTS[taunt], fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = TAUNTS[taunt],
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Dopa.Foreground
+                )
             }
         }
         Spacer(Modifier.padding(top = 24.dp))
