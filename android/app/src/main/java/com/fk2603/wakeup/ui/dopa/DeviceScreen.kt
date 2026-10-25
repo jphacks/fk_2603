@@ -75,8 +75,6 @@ fun DeviceScreen(
         }
         ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
 
-        DeviceCard(ui)
-
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionLabel("PRESSURE LOG") { SectionHint("直近8時間") }
             PressureChart(ui, nowSec)
@@ -102,8 +100,17 @@ fun DeviceScreen(
                     if (i > 0) HorizontalDivider(color = Dopa.Border)
                     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            Text(c.label, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                            Text(c.sub, fontSize = 11.sp, color = Dopa.Muted)
+                            Text(
+                                text = c.label,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Dopa.Foreground
+                            )
+                            Text(
+                                text = c.sub,
+                                fontSize = 11.sp,
+                                color = Dopa.Muted
+                            )
                         }
                         DopaSwitch(c in ui.blocked, { onToggleBlock(c, it) }, c.label)
                     }
