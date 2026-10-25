@@ -91,6 +91,8 @@ fun ClearScreen(ui: ClearUi, onDone: () -> Unit) {
                         textAlign = TextAlign.Center, maxLines = 1,
                     )
                 }
+
+                // キャラクターのセリフ
                 TalkLabel(
                     if (ui.resleep) "…二度寝は許してない。" else "…まあ、やるじゃん。",
                     Modifier.align(Alignment.BottomCenter).offset(y = (-4).dp),
