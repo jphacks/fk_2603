@@ -1,6 +1,6 @@
 # OKI:LOCK
 
-[![IMAGE ALT TEXT HERE](https://jphacks.com/wp-content/uploads/2026/07/IMG_5316.png)](https://www.youtube.com/watch?v=piaNsc6ilBI)
+[![OKI:LOCK プロモーション動画](https://img.youtube.com/vi/VT82YRhZjAk/maxresdefault.jpg)](https://youtu.be/VT82YRhZjAk)
 
 チーム二度寝界隈
 
