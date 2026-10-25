@@ -76,6 +76,10 @@ fun HomeScreen(
                 StreakCard(ui.streak, Modifier.weight(1f).fillMaxWidth())
             }
         }
+
+        DemoButton(onDemo)
+
+        
         ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionLabel("ALARMS") {
@@ -199,8 +203,11 @@ private fun WatcherCard(ui: HomeUi, modifier: Modifier) {
         Box(Modifier.fillMaxSize()) {
             Watcher(WatcherMood.SLEEPY, Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, top = 42.dp, bottom = 12.dp).floating())
             SpeechBubble(
-                if (ui.inBed) "「布団に負けるなよ。」" else "「今日もやるぞ。」",
-                Modifier.padding(start = 12.dp, top = 4.dp).width(170.dp).height(60.dp),
+                if (ui.inBed) "「まだ寝る気か？」" else "「スマホより俺を見ろ。」",
+                Modifier
+                    .padding(start = 19.dp, top = 30.dp)
+                    .width(170.dp)
+                    .height(60.dp),
             )
             Sticker("ドパ監視員", Modifier.align(Alignment.BottomStart).padding(12.dp), rotation = -3f)
         }
