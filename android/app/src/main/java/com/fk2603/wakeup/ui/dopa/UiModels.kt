@@ -25,6 +25,10 @@ data class HomeUi(
     val state: String?,
     /** セット中のアラーム（UNIX秒）。なければ null */
     val alarmEpoch: Long?,
+    val localAlarms: List<LocalAlarm> = emptyList(),
+    val routineDate: String = "",
+    val routineTasks: List<MorningTask> = emptyList(),
+    val completedTaskIds: Set<Long> = emptySet(),
     /** アラームを変更できない（鳴動中など） */
     val alarmLocked: Boolean,
     val blocked: Set<BlockCategory>,
@@ -90,3 +94,34 @@ data class LockUi(
     val inBed: Boolean,
     val blocked: Set<BlockCategory>,
 )
+
+/** スマホ側で管理するアラーム。曜日は月=1〜日=7、空なら1回のみ。 */
+data class LocalAlarm(
+    val id: Long,
+    val hour: Int,
+    val minute: Int,
+    val weekdays: Set<Int> = emptySet(),
+    val enabled: Boolean = true,
+)
+
+fun LocalAlarm.nextEpoch(now: java.time.ZonedDateTime = java.time.ZonedDateTime.now()): Long? {
+    if (!enabled) return null
+    for (offset in 0..7) {
+        val date = now.toLocalDate().plusDays(offset.toLong())
+        if (weekdays.isNotEmpty() && date.dayOfWeek.value !in weekdays) continue
+        val target = date.atTime(hour, minute).atZone(now.zone)
+        if (target.isAfter(now)) return target.toEpochSecond()
+    }
+    return null
+}
+
+/** 毎週繰り返すタスク、または指定日の単発タスク。曜日は月=1〜日=7。 */
+data class MorningTask(
+    val id: Long,
+    val title: String,
+    val weekdays: Set<Int> = (1..7).toSet(),
+    val onlyDate: String? = null,
+)
+
+fun MorningTask.appliesTo(date: java.time.LocalDate): Boolean =
+    if (onlyDate != null) onlyDate == date.toString() else date.dayOfWeek.value in weekdays

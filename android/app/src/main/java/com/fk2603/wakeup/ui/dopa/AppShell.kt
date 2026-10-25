@@ -1,6 +1,8 @@
 package com.fk2603.wakeup.ui.dopa
 
 import android.content.Intent
+import org.json.JSONArray
+import org.json.JSONObject
 import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
@@ -36,6 +38,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -57,6 +60,10 @@ import com.fk2603.wakeup.ui.AppViewModel
 import com.fk2603.wakeup.ui.theme.Dopa
 import kotlinx.coroutines.delay
 import java.time.LocalTime
+import java.time.ZonedDateTime
+import java.time.Instant
+import java.time.ZoneId
+import java.time.LocalDate
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     HOME("ホーム", Icons.Rounded.Home),
@@ -100,6 +107,81 @@ fun AppShell(vm: AppViewModel) {
     var showPicker by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
     var demo by remember { mutableStateOf<DemoStep?>(null) }
+    // アラームは端末内に保存。M5Stackの接続有無に関係なく一覧表示できる。
+    val prefs = remember(context) { context.getSharedPreferences("dopa_local_alarms", android.content.Context.MODE_PRIVATE) }
+    val localAlarms = remember {
+        mutableStateListOf<LocalAlarm>().apply {
+            val raw = prefs.getString("alarms", "[]") ?: "[]"
+            runCatching {
+                val arr = JSONArray(raw)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val daysArray = obj.optJSONArray("days") ?: JSONArray()
+                    val days = (0 until daysArray.length()).map { daysArray.getInt(it) }.toSet()
+                    add(LocalAlarm(obj.getLong("id"), obj.getInt("hour"), obj.getInt("minute"), days, obj.optBoolean("enabled", true)))
+                }
+            }
+        }
+    }
+    fun saveLocalAlarms() {
+        val arr = JSONArray()
+        localAlarms.forEach { alarm ->
+            arr.put(JSONObject().apply {
+                put("id", alarm.id)
+                put("hour", alarm.hour)
+                put("minute", alarm.minute)
+                put("enabled", alarm.enabled)
+                put("days", JSONArray().apply { alarm.weekdays.sorted().forEach { put(it) } })
+            })
+        }
+        prefs.edit().putString("alarms", arr.toString()).apply()
+    }
+    var pendingDeleteId by remember { mutableStateOf<Long?>(null) }
+    val nextLocalAlarmEpoch = localAlarms.mapNotNull { it.nextEpoch() }.minOrNull()
+
+    // ルーティンの保存。チェック状態はタスクIDと対象日を組にして管理する。
+    val routinePrefs = remember(context) { context.getSharedPreferences("dopa_routines", android.content.Context.MODE_PRIVATE) }
+    val routineTasks = remember {
+        mutableStateListOf<MorningTask>().apply {
+            runCatching {
+                val arr = JSONArray(routinePrefs.getString("tasks", "[]") ?: "[]")
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val days = obj.optJSONArray("days") ?: JSONArray()
+                    add(MorningTask(obj.getLong("id"), obj.getString("title"),
+                        (0 until days.length()).map { days.getInt(it) }.toSet(),
+                        obj.optString("onlyDate").takeIf { it.isNotBlank() }))
+                }
+            }
+        }
+    }
+    val doneKeys = remember {
+        mutableStateListOf<String>().apply {
+            runCatching {
+                val arr = JSONArray(routinePrefs.getString("done", "[]") ?: "[]")
+                for (i in 0 until arr.length()) add(arr.getString(i))
+            }
+        }
+    }
+    fun saveRoutines() {
+        val arr = JSONArray()
+        routineTasks.forEach { task ->
+            arr.put(JSONObject().apply {
+                put("id", task.id); put("title", task.title); put("onlyDate", task.onlyDate ?: "")
+                put("days", JSONArray().apply { task.weekdays.sorted().forEach { put(it) } })
+            })
+        }
+        routinePrefs.edit().putString("tasks", arr.toString())
+            .putString("done", JSONArray(doneKeys.toList()).toString()).apply()
+    }
+    var showRoutineEditor by remember { mutableStateOf(false) }
+    val missionDate = (nextLocalAlarmEpoch ?: status?.alarmEpoch?.takeIf {
+        connected && it > 0 && status?.state in ALARM_SHOWN_STATES
+    })?.let { Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault()).toLocalDate() }
+        ?: LocalDate.now()
+    val missionDateKey = missionDate.toString()
+    val visibleTasks = routineTasks.filter { it.appliesTo(missionDate) }
+    val completedForMission = visibleTasks.filter { "${missionDateKey}:${it.id}" in doneKeys }.map { it.id }.toSet()
 
     // 操作結果のメッセージは数秒で消す
     LaunchedEffect(message) {
@@ -141,7 +223,13 @@ fun AppShell(vm: AppViewModel) {
                                     connected = connected,
                                     inBed = s?.inBed == true,
                                     state = s?.state,
-                                    alarmEpoch = s?.alarmEpoch?.takeIf { it > 0 && s.state in ALARM_SHOWN_STATES },
+                                    alarmEpoch = nextLocalAlarmEpoch ?: s?.alarmEpoch?.takeIf {
+                                        connected && it > 0 && s.state in ALARM_SHOWN_STATES
+                                    },
+                                    localAlarms = localAlarms.toList(),
+                                    routineDate = missionDateKey,
+                                    routineTasks = visibleTasks,
+                                    completedTaskIds = completedForMission,
                                     alarmLocked = s?.state in ALARM_ACTIVE_STATES,
                                     blocked = blocked,
                                     warnings = warnings,
@@ -150,6 +238,20 @@ fun AppShell(vm: AppViewModel) {
                                 nowSec = nowSec,
                                 onAddAlarm = { showPicker = true },
                                 onCancelAlarm = vm::cancelAlarm,
+                                onToggleLocalAlarm = { id, enabled ->
+                                    val index = localAlarms.indexOfFirst { it.id == id }
+                                    if (index >= 0) {
+                                        localAlarms[index] = localAlarms[index].copy(enabled = enabled)
+                                        saveLocalAlarms()
+                                    }
+                                },
+                                onDeleteLocalAlarm = { pendingDeleteId = it },
+                                onEditRoutine = { showRoutineEditor = true },
+                                onToggleRoutineTask = { id ->
+                                    val key = "${missionDateKey}:$id"
+                                    if (key in doneKeys) doneKeys.remove(key) else doneKeys.add(key)
+                                    saveRoutines()
+                                },
                                 onWarning = ::openSetting,
                                 onDemo = { demo = DemoStep.ALARM },
                             )
@@ -201,15 +303,54 @@ fun AppShell(vm: AppViewModel) {
         }
     }
 
+    if (showRoutineEditor) {
+        RoutineDialog(
+            tasks = routineTasks.toList(),
+            onDismiss = { showRoutineEditor = false },
+            onAdd = { title, weekdays, onlyDate ->
+                routineTasks.add(MorningTask(System.nanoTime(), title, weekdays, onlyDate))
+                saveRoutines()
+            },
+            onDelete = { id ->
+                routineTasks.removeAll { it.id == id }
+                doneKeys.removeAll { it.endsWith(":$id") }
+                saveRoutines()
+            },
+        )
+    }
+
     if (showPicker) {
         AlarmTimeDialog(
             initial = status?.alarmEpoch?.takeIf { it > 0 }
                 ?.let { java.time.Instant.ofEpochSecond(it).atZone(java.time.ZoneId.systemDefault()).toLocalTime() }
                 ?: LocalTime.of(7, 30),
             onDismiss = { showPicker = false },
-            onSave = { h, m ->
+            onSave = { h, m, days ->
                 showPicker = false
-                vm.setAlarm(h, m)
+                localAlarms.add(LocalAlarm(System.nanoTime(), h, m, days))
+                saveLocalAlarms()
+                // 既存のM5Stack側は単一アラーム仕様のため、ここでは自動送信しない。
+            },
+        )
+    }
+
+    pendingDeleteId?.let { id ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteId = null },
+            containerColor = Dopa.Surface,
+            title = { Text("アラームを削除") },
+            text = { Text("このアラームを削除しますか？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    localAlarms.removeAll { it.id == id }
+                    saveLocalAlarms()
+                    pendingDeleteId = null
+                }) { Text("削除", color = Dopa.Alert) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteId = null }) {
+                    Text("キャンセル", color = Dopa.Foreground)
+                }
             },
         )
     }

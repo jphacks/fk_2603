@@ -26,6 +26,10 @@ import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.Bed
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.LocalFireDepartment
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,6 +55,10 @@ fun HomeScreen(
     nowSec: Long,
     onAddAlarm: () -> Unit,
     onCancelAlarm: () -> Unit,
+    onToggleLocalAlarm: (Long, Boolean) -> Unit,
+    onDeleteLocalAlarm: (Long) -> Unit,
+    onEditRoutine: () -> Unit,
+    onToggleRoutineTask: (Long) -> Unit,
     onWarning: (SetupWarning) -> Unit,
     onDemo: () -> Unit,
 ) {
@@ -60,15 +68,14 @@ fun HomeScreen(
     ) {
         Header(ui)
         ui.warnings.forEach { WarningCard(it) { onWarning(it) } }
-        NextMission(ui, nowSec)
-        Row(Modifier.fillMaxWidth().height(200.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        NextMission(ui, nowSec, onEditRoutine, onToggleRoutineTask)
+        Row(Modifier.fillMaxWidth().height(260.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             WatcherCard(ui, Modifier.weight(3f).fillMaxHeight())
             Column(Modifier.weight(2f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 BedCard(ui, Modifier.weight(1f).fillMaxWidth())
                 StreakCard(ui.streak, Modifier.weight(1f).fillMaxWidth())
             }
         }
-        DemoButton(onDemo)
         ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionLabel("ALARMS") {
@@ -76,7 +83,13 @@ fun HomeScreen(
                     Icon(Icons.Rounded.Add, "アラームをセット", tint = Dopa.Foreground, modifier = Modifier.size(16.dp))
                 }
             }
-            AlarmRow(ui, onAddAlarm, onCancelAlarm)
+            if (ui.localAlarms.isEmpty()) {
+                AlarmRow(ui, onAddAlarm, onCancelAlarm)
+            } else {
+                ui.localAlarms.sortedWith(compareBy({ it.hour }, { it.minute })).forEach { alarm ->
+                    LocalAlarmRow(alarm, ui.alarmLocked, onToggleLocalAlarm, onDeleteLocalAlarm)
+                }
+            }
         }
     }
 }
@@ -124,14 +137,14 @@ private fun WarningCard(w: SetupWarning, onClick: () -> Unit) {
 }
 
 @Composable
-private fun NextMission(ui: HomeUi, nowSec: Long) {
+private fun NextMission(ui: HomeUi, nowSec: Long, onEditRoutine: () -> Unit, onToggleRoutineTask: (Long) -> Unit) {
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Dopa.Lime).padding(20.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Rounded.Alarm, null, tint = Dopa.LimeForeground, modifier = Modifier.size(16.dp))
             HSpace(6.dp)
-            Text("NEXT MISSION", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Dopa.LimeForeground, modifier = Modifier.weight(1f))
+            Text("NEXT MISSION", fontSize = 16.sp, fontWeight = FontWeight.Black, fontFamily = Dopa.Display, color = Dopa.LimeForeground, modifier = Modifier.weight(1f))
             ui.alarmEpoch?.let { epoch ->
                 Text(
                     remaining(epoch - nowSec),
@@ -146,7 +159,32 @@ private fun NextMission(ui: HomeUi, nowSec: Long) {
             ui.alarmEpoch?.let { dayLabel(it) } ?: "アラーム未設定｜＋ からセット",
             fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Dopa.LimeForeground,
         )
-        VSpace(16.dp)
+        VSpace(14.dp)
+        HorizontalDivider(color = Dopa.LimeForeground.copy(alpha = 0.22f))
+        VSpace(12.dp)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("MORNING ROUTINE", fontSize = 17.sp, fontWeight = FontWeight.Black, fontFamily = Dopa.Display,
+                color = Dopa.LimeForeground, modifier = Modifier.weight(1f))
+            Text("編集 ＋", Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClick = onEditRoutine)
+                .padding(8.dp), color = Dopa.LimeForeground, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        if (ui.routineTasks.isEmpty()) {
+            Text("タスクを追加して、朝の予定を決めよう", color = Dopa.LimeForeground.copy(alpha = 0.75f), fontSize = 12.sp)
+        } else {
+            ui.routineTasks.forEach { task ->
+                val done = task.id in ui.completedTaskIds
+                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                    .clickable { onToggleRoutineTask(task.id) }
+                    .padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (done) "☑" else "☐", fontSize = 20.sp, color = Dopa.LimeForeground)
+                    HSpace(10.dp)
+                    Text(task.title, fontSize = 13.sp, color = Dopa.LimeForeground.copy(alpha = if (done) 0.55f else 1f))
+                }
+            }
+            Text("${ui.completedTaskIds.size} / ${ui.routineTasks.size} 完了  ・ ${ui.routineDate}",
+                fontSize = 11.sp, color = Dopa.LimeForeground.copy(alpha = 0.75f))
+        }
+        VSpace(12.dp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val blocked = ui.blocked.sortedBy { it.ordinal }.joinToString(" / ") { it.label }.ifEmpty { "なし" }
             OutlineChip("制限: $blocked", Dopa.LimeForeground)
@@ -283,4 +321,37 @@ fun dayLabel(epochSec: Long): String {
         else -> formatEpoch(epochSec, "M/d")
     }
     return "$day・${WEEKDAYS[date.dayOfWeek.value - 1]}曜"
+}
+
+@Composable
+private fun LocalAlarmRow(
+    alarm: LocalAlarm,
+    locked: Boolean,
+    onToggle: (Long, Boolean) -> Unit,
+    onDelete: (Long) -> Unit,
+) {
+    val shape = RoundedCornerShape(16.dp)
+    val days = if (alarm.weekdays.isEmpty()) "1回のみ" else
+        if (alarm.weekdays.size == 7) "毎日" else
+            alarm.weekdays.sorted().joinToString("・") { listOf("月", "火", "水", "木", "金", "土", "日")[it - 1] }
+    Row(
+        Modifier.fillMaxWidth().clip(shape).background(Dopa.Surface)
+            .border(1.dp, Dopa.Border, shape)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).alpha(if (alarm.enabled) 1f else 0.4f)) {
+            DisplayText("%02d:%02d".format(alarm.hour, alarm.minute), 30.sp)
+            Text(days, fontSize = 11.sp, color = Dopa.Muted)
+        }
+        DopaSwitch(
+            checked = alarm.enabled,
+            onChange = { onToggle(alarm.id, it) },
+            label = "アラーム",
+            enabled = !locked,
+        )
+        IconButton(onClick = { onDelete(alarm.id) }, enabled = !locked) {
+            Icon(Icons.Rounded.Delete, contentDescription = "アラームを削除", tint = Dopa.Alert)
+        }
+    }
 }
