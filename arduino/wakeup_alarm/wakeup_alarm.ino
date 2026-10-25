@@ -36,7 +36,7 @@ const char* BLE_NAME = "WakeUp";  // 実際の名前は "WakeUp-<devId>"（ス�
 const char* SERVICE_UUID = "6e0f0001-3b6a-4c1e-9b3a-2a4f8c1d7e01";
 const char* STATUS_UUID = "6e0f0002-3b6a-4c1e-9b3a-2a4f8c1d7e01";   // read / notify: 状態 JSON
 const char* COMMAND_UUID = "6e0f0003-3b6a-4c1e-9b3a-2a4f8c1d7e01";  // write: コマンド JSON
-const uint32_t STATUS_NOTIFY_MS = 1000;  // 接続中に状態を送る間隔
+const uint32_t STATUS_NOTIFY_MS = 500;   // 接続中に状態を送る間隔（アプリの圧力グラフが 0.5 秒ごとに更新する）
 const uint32_t PAIR_HOLD_MS = 3000;       // C ボタンをこの時間押し続けるとペアリング（QR 表示）
 const uint32_t UNPAIR_ALL_HOLD_MS = 5000; // A ボタンをこの時間押し続けると全スマホの登録を消す
 
@@ -49,7 +49,7 @@ const int IN_BED_HYSTERESIS = 50;     // 閾値付近でのばたつき防止（
 const int FSR_SAMPLES = 8;            // 平均を取るサンプル数
 
 // --- 時間設定（秒）---
-const uint32_t WAKE_CONFIRM_SEC = 10;            // 圧力なしがこの秒数続いたら「起床」（音はベッドを出た瞬間に止まる。初期値。アプリから変更できる）
+const uint32_t WAKE_CONFIRM_SEC = 5;             // 圧力なしがこの秒数続いたら「起床」して止まる（それまで音は鳴り続ける。初期値。アプリから変更できる）
 const uint32_t WAKE_CONFIRM_SEC_MIN = 5;         // アプリから設定できる範囲
 const uint32_t WAKE_CONFIRM_SEC_MAX = 300;
 const uint32_t BED_WAIT_SEC = 10 * 60;           // アラーム時刻にベッドにいなければ、この時間内にベッドに入ったら鳴らす
@@ -58,8 +58,10 @@ const uint32_t SLEEP_START_CONFIRM_SEC = 20 * 60; // 圧力ありがこの秒数
 const uint32_t SENSOR_NOISE_SEC = 10;            // 在床中にこの秒数未満だけ圧力が消えても、センサーの誤差として連続扱い
 const uint32_t RESLEEP_WINDOW_SEC = SESSION_GAP_SEC; // 起床後この時間内にベッドに戻ったら二度寝扱い
 const uint32_t RESLEEP_DETECT_SEC = 60;          // 圧力ありがこの秒数続いたら「二度寝」（寝返りなどの誤検出防止）
-const uint32_t RESLEEP_ALARM_DELAY_SEC = 5 * 60; // ベッドに戻ってからアラームを鳴らすまで
-// アラームはベッドにいる間だけ鳴る（ベッドを出ると止まり、戻るとまた鳴る。C ボタンはベッドの外でのみ有効）
+const uint32_t RESLEEP_DELAY_MIN = 10;           // 二度寝: ベッドに戻ってから鳴らすまで（分。初期値。アプリから 10/20/30 を選ぶ）
+// 3度寝（二度寝アラームで起きてから RESLEEP_WINDOW_SEC 以内にベッドに戻った）は、戻った瞬間に鳴らす
+const uint32_t STOP_AFTER_LEAVE_SEC = 5;         // ベッドを出てもこの秒数は鳴り続け、それまでは止められない（C ボタン・スマホ）
+// アラームはベッドを出ても鳴り続け、WAKE_CONFIRM_SEC ベッドの外にいると止まる（戻ると数え直し）
 // スマホはアラームに関係なく、ベッドにいる間は常にロックされる
 
 // --- 音量 ---
@@ -164,6 +166,9 @@ uint32_t bedStreakStartMs = 0;  // その開始
 Preferences settings;
 int inBedThreshold = IN_BED_THRESHOLD;
 uint32_t wakeConfirmSec = WAKE_CONFIRM_SEC;
+uint32_t resleepDelayMin = RESLEEP_DELAY_MIN;
+
+bool validResleepDelay(long m) { return m == 10 || m == 20 || m == 30; }
 
 // 圧力
 int pressureRaw = 0;
@@ -388,15 +393,12 @@ void updateState() {
       break;
 
     case RINGING:
-      // 音はベッドにいる間だけ。出た瞬間に止め、戻ったらまた鳴らす
-      if (inBed) {
-        if (now - lastBeepMs >= ALARM_CYCLE_MS) {
-          lastBeepMs = now;
-          M5.Speaker.tone(ALARM_FREQ_HZ, ALARM_BEEP_MS);
-        }
-      } else {
-        if (M5.Speaker.isPlaying()) stopSound();
-        if (secSinceBedChange() >= wakeConfirmSec) finishRinging();
+      // ベッドを出ても鳴り続け、wakeConfirmSec ベッドの外にいたら止める（戻ったら数え直し）
+      if (!inBed && secSinceBedChange() >= wakeConfirmSec) {
+        finishRinging();
+      } else if (now - lastBeepMs >= ALARM_CYCLE_MS) {
+        lastBeepMs = now;
+        M5.Speaker.tone(ALARM_FREQ_HZ, ALARM_BEEP_MS);
       }
       break;
 
@@ -405,10 +407,15 @@ void updateState() {
       bool returnedInWindow = inBed && bedChangedMs - awakeEnteredMs < RESLEEP_WINDOW_SEC * 1000UL;
       if (alarmDue) {
         onAlarmDue();
-      } else if (returnedInWindow && secSinceBedChange() >= RESLEEP_DETECT_SEC) {
-        // 鳴らすのは「ベッドに戻ってから」RESLEEP_ALARM_DELAY_SEC 後
+      } else if (returnedInWindow && ringIsResleep) {
+        // 3度寝以降（二度寝アラームで起きたあとに戻った）: すぐ鳴らす
         onReturnToBed(epoch - secSinceBedChange());
-        resleepEpoch = epoch - secSinceBedChange() + RESLEEP_ALARM_DELAY_SEC;
+        Serial.println("[RESLEEP] again, ringing now");
+        startRinging(true);
+      } else if (returnedInWindow && secSinceBedChange() >= RESLEEP_DETECT_SEC) {
+        // 二度寝: 鳴らすのは「ベッドに戻ってから」resleepDelayMin 分後
+        onReturnToBed(epoch - secSinceBedChange());
+        resleepEpoch = epoch - secSinceBedChange() + resleepDelayMin * 60;
         Serial.printf("[RESLEEP] detected, alarm at %s\n", fmtTime(resleepEpoch).c_str());
         setState(RESLEEP_ARMED);
       } else if (inBed && !returnedInWindow) {
@@ -476,6 +483,8 @@ void handleButtons() {
   if (M5.BtnC.wasPressed() && state == RINGING) {
     if (inBed) {
       Serial.println("[BUTTON] ignored (still in bed)");
+    } else if (secSinceBedChange() < STOP_AFTER_LEAVE_SEC) {
+      Serial.println("[BUTTON] ignored (just left bed)");
     } else {
       Serial.println("[BUTTON] alarm stopped");
       finishRinging();
@@ -608,8 +617,9 @@ void drawScreen() {
 //     {"cmd":"time","epoch":<unix秒>}            時刻を合わせる
 //     {"seq":n,"cmd":"set","epoch":<unix秒>}     アラームをセット
 //     {"seq":n,"cmd":"cancel"}                   アラームを解除
+//     {"seq":n,"cmd":"stop"}                     鳴動を止めて起床を記録（右ボタンと同じ。ベッドを出て STOP_AFTER_LEAVE_SEC 後から）
 //     {"cmd":"evack","id":n}                     睡眠イベント n を受け取った（次のイベントを送る）
-//     {"seq":n,"cmd":"config","th":<raw>,"wc":<秒>} 在床しきい値と起床確認時間を変更（NVS に保存）
+//     {"seq":n,"cmd":"config","th":<raw>,"wc":<秒>,"rd":<分>} 在床しきい値・起床確認時間・二度寝の再鳴動までを変更（NVS に保存。rd は省略可）
 //     {"cmd":"unpair"}                           このスマホの登録を消す
 //   seq 付きのコマンドの結果は、状態 JSON の ack に入る
 // ------------------------------------------------------------
@@ -618,7 +628,7 @@ void drawScreen() {
 //   s=状態 l=ロック a=次に鳴る時刻 v=音量 t=現在時刻 r=raw b=ベッドにいる
 //   w=[id, ringAt, awakeAt, durationSec, resleep]（記録なしは null） k=[seq, error]
 //   e=[id, 種類(S=就寝 R=二度寝 E=起床), 時刻]（未送信でいちばん古い睡眠イベント。なしは null）
-//   c=[在床しきい値, 起床確認秒] p=1（再接続モード中だけ。スマホはこれを見て登録を解除する）
+//   c=[在床しきい値, 起床確認秒, 二度寝の再鳴動までの分] p=1（再接続モード中だけ。スマホはこれを見て登録を解除する）
 String buildStatusJson() {
   JsonDocument doc;
   doc["s"] = stateName(state);
@@ -654,6 +664,7 @@ String buildStatusJson() {
   JsonArray c = doc["c"].to<JsonArray>();
   c.add(inBedThreshold);
   c.add(wakeConfirmSec);
+  c.add(resleepDelayMin);
   if (SecureLink::pairing()) doc["p"] = 1;  // 再接続モード中（スマホ側も登録を解除する）
   String body;
   serializeJson(doc, body);
@@ -698,18 +709,35 @@ const char* doCancelAlarm() {
   return "";
 }
 
+// スマホの「アラームを止める」。右ボタンと同じく、ベッドを出ているときだけ止められる
+const char* doStopAlarm() {
+  if (state != RINGING) return "not ringing";
+  if (inBed) return "in bed";
+  if (secSinceBedChange() < STOP_AFTER_LEAVE_SEC) return "too early";
+  Serial.println("[BLE] alarm stopped");
+  finishRinging();
+  return "";
+}
+
 // ベッドにいる間やアラーム中は変えられない（しきい値を下げてロックを抜けるのを防ぐ）
-const char* doConfig(int threshold, long confirmSec) {
+// resleepMin < 0 は「変えない」（古いアプリ）
+const char* doConfig(int threshold, long confirmSec, long resleepMin) {
   if (phoneLocked()) return "locked";
   if (threshold < IN_BED_THRESHOLD_MIN || threshold > IN_BED_THRESHOLD_MAX ||
-      confirmSec < (long)WAKE_CONFIRM_SEC_MIN || confirmSec > (long)WAKE_CONFIRM_SEC_MAX) {
+      confirmSec < (long)WAKE_CONFIRM_SEC_MIN || confirmSec > (long)WAKE_CONFIRM_SEC_MAX ||
+      (resleepMin >= 0 && !validResleepDelay(resleepMin))) {
     return "out of range";
   }
   inBedThreshold = threshold;
   wakeConfirmSec = confirmSec;
   settings.putInt("th", inBedThreshold);
   settings.putUInt("wc", wakeConfirmSec);
-  Serial.printf("[BLE] config threshold=%d wakeConfirm=%lus\n", inBedThreshold, (unsigned long)wakeConfirmSec);
+  if (resleepMin >= 0) {
+    resleepDelayMin = resleepMin;
+    settings.putUInt("rd", resleepDelayMin);
+  }
+  Serial.printf("[BLE] config threshold=%d wakeConfirm=%lus resleep=%lumin\n", inBedThreshold,
+                (unsigned long)wakeConfirmSec, (unsigned long)resleepDelayMin);
   return "";
 }
 
@@ -717,7 +745,10 @@ void loadSettings() {
   settings.begin("wakeup", false);
   inBedThreshold = constrain(settings.getInt("th", IN_BED_THRESHOLD), IN_BED_THRESHOLD_MIN, IN_BED_THRESHOLD_MAX);
   wakeConfirmSec = constrain(settings.getUInt("wc", WAKE_CONFIRM_SEC), WAKE_CONFIRM_SEC_MIN, WAKE_CONFIRM_SEC_MAX);
-  Serial.printf("[BOOT] threshold=%d wakeConfirm=%lus\n", inBedThreshold, (unsigned long)wakeConfirmSec);
+  resleepDelayMin = settings.getUInt("rd", RESLEEP_DELAY_MIN);
+  if (!validResleepDelay(resleepDelayMin)) resleepDelayMin = RESLEEP_DELAY_MIN;
+  Serial.printf("[BOOT] threshold=%d wakeConfirm=%lus resleep=%lumin\n", inBedThreshold,
+                (unsigned long)wakeConfirmSec, (unsigned long)resleepDelayMin);
 }
 
 void handleJsonCommand(const char* text) {
@@ -737,8 +768,10 @@ void handleJsonCommand(const char* text) {
     ackEvent(req["id"].as<uint32_t>());
   } else if (strcmp(cmd, "cancel") == 0) {
     err = doCancelAlarm();
+  } else if (strcmp(cmd, "stop") == 0) {
+    err = doStopAlarm();
   } else if (strcmp(cmd, "config") == 0) {
-    err = doConfig(req["th"] | -1, req["wc"] | -1L);
+    err = doConfig(req["th"] | -1, req["wc"] | -1L, req["rd"] | -1L);
   } else if (strcmp(cmd, "unpair") == 0) {
     SecureLink::unpairCurrent();
   } else {

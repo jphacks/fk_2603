@@ -5,8 +5,10 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material3.AlertDialog
@@ -51,6 +54,7 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fk2603.wakeup.BedPhoneSession
 import com.fk2603.wakeup.Config
 import com.fk2603.wakeup.Gamification
 import com.fk2603.wakeup.M5Config
@@ -76,12 +80,13 @@ fun AppShell(vm: AppViewModel) {
     val status by vm.status.collectAsState()
     val statusError by vm.statusError.collectAsState()
     val sleeps by vm.sleeps.collectAsState()
-    val samples by vm.pressure.collectAsState()
     val wakes by vm.wakes.collectAsState()
     val screenTime by vm.screenTime.collectAsState()
     val alarms by vm.alarms.collectAsState()
     val routineTasks by vm.routineTasks.collectAsState()
     val routineHistory by vm.routineHistory.collectAsState()
+    val bedPhone by vm.bedPhone.collectAsState()
+    val bedPhoneActiveSince by vm.bedPhoneActiveSince.collectAsState()
     val nickname by vm.nickname.collectAsState()
     val blocked by vm.blocked.collectAsState()
     val apps by vm.apps.collectAsState()
@@ -92,6 +97,7 @@ fun AppShell(vm: AppViewModel) {
     val loading by vm.loading.collectAsState()
     val clear by vm.clear.collectAsState()
     val paired by vm.paired.collectAsState()
+    val emergency by vm.emergency.collectAsState()
 
     val nowMs by produceState(System.currentTimeMillis()) {
         while (true) {
@@ -115,6 +121,19 @@ fun AppShell(vm: AppViewModel) {
     var confirmDelete by remember { mutableStateOf(false) }
     var demo by remember { mutableStateOf<DemoStep?>(null) }
     var showScreenTime by rememberSaveable { mutableStateOf(false) }
+
+    // デバイスがつながったら「接続成功」を 2 秒だけ出す
+    var showConnected by remember { mutableStateOf(false) }
+    LaunchedEffect(connected) {
+        if (connected) {
+            try {
+                showConnected = true
+                delay(2000)
+            } finally {
+                showConnected = false
+            }
+        }
+    }
 
     // 操作結果のメッセージは数秒で消す
     LaunchedEffect(message) {
@@ -199,6 +218,8 @@ fun AppShell(vm: AppViewModel) {
                                 onToggleRoutineTask = vm::toggleRoutineTask,
                                 onWarning = ::openSetting,
                                 onAddDevice = ::scanDevice,
+                                onDemo = { demo = DemoStep.ALARM },
+                                onDebugAlarm = vm::setDebugAlarm,
                             )
                         }
                         Tab.STATS -> StatsScreen(
@@ -206,6 +227,9 @@ fun AppShell(vm: AppViewModel) {
                                 nickname = nickname,
                                 progress = progress,
                                 routineHistory = routineHistory,
+                                records = wakes.map { it.toRecord() },
+                                bedPhone = bedPhone,
+                                bedPhoneActive = bedPhoneActiveSince.takeIf { it > 0 }?.let { BedPhoneSession(it, maxOf(it, nowSec)) },
                                 loading = loading,
                                 message = message,
                             ),
@@ -217,7 +241,6 @@ fun AppShell(vm: AppViewModel) {
                         )
                         Tab.DEVICE -> {
                             val s = status
-                            val latest = sleeps.firstOrNull()
                             DeviceScreen(
                                 DeviceUi(
                                     connected = connected,
@@ -226,9 +249,6 @@ fun AppShell(vm: AppViewModel) {
                                     volume = s?.volume,
                                     pressureRaw = s?.pressureRaw,
                                     inBed = s?.inBed == true,
-                                    samples = samples,
-                                    sleepStartAt = latest?.startAt,
-                                    sleepEndAt = latest?.endAt?.takeIf { it > 0 },
                                     config = s?.config,
                                     configLocked = s?.locked == true,
                                     apps = blockApps,
@@ -237,8 +257,13 @@ fun AppShell(vm: AppViewModel) {
                                     sleeps = sleeps,
                                     message = message,
                                     pairedDevId = if (paired) vm.pairedDevId() else null,
+                                    emergency = emergency,
                                 ),
-                                nowSec = nowSec,
+                                // 0.5 秒ごとにグラフが読む（画面全体は描き直さない）
+                                livePressure = {
+                                    vm.status.value?.pressureRaw
+                                        ?.takeIf { System.currentTimeMillis() - M5Link.lastStatusMs < Config.BLE_STALE_MS }
+                                },
                                 onConfig = vm::setConfig,
                                 onToggleApp = vm::setAppBlocked,
                                 onBlockAll = vm::blockAllApps,
@@ -252,6 +277,22 @@ fun AppShell(vm: AppViewModel) {
                     }
                 }
                 NavBar(tab) { tab = it }
+            }
+        }
+        AnimatedVisibility(
+            showConnected,
+            Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 12.dp),
+            enter = fadeIn() + slideInVertically(),
+            exit = fadeOut(),
+        ) {
+            Row(
+                Modifier.clip(CircleShape).background(Dopa.Surface).border(2.dp, Dopa.Lime, CircleShape)
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Rounded.CheckCircle, null, tint = Dopa.Lime, modifier = Modifier.size(18.dp))
+                HSpace(8.dp)
+                Text("接続成功", color = Dopa.Foreground, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -387,6 +428,7 @@ private fun DemoFlow(
         inBed = pressure >= threshold,
         blockedPkgs = blockedPkgs,
         streak = progressStreak,
+        canStop = true,
     )
     Box(Modifier.fillMaxSize()) {
         when (step) {

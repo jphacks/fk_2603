@@ -49,6 +49,10 @@ object AlarmSchedule {
     val alarms: StateFlow<List<LocalAlarm>> = _alarms
     private var loaded = false
 
+    /** デバッグ用の1回だけのアラーム（UNIX秒。保存しない）。ホーム上部の「10秒後」ボタンで入る */
+    @Volatile
+    var debugEpoch = 0L
+
     private fun sp(context: Context) = context.applicationContext.getSharedPreferences("dopa_local_alarms", Context.MODE_PRIVATE)
 
     @Synchronized
@@ -103,7 +107,8 @@ object AlarmSchedule {
     /** 有効なアラームのうち一番近い時刻（UNIX秒） */
     fun nextEpoch(context: Context, now: ZonedDateTime = ZonedDateTime.now()): Long? {
         load(context)
-        return _alarms.value.mapNotNull { it.nextEpoch(now) }.minOrNull()
+        val debug = debugEpoch.takeIf { it > now.toEpochSecond() }
+        return (_alarms.value.mapNotNull { it.nextEpoch(now) } + listOfNotNull(debug)).minOrNull()
     }
 
     private fun withOnceAt(a: LocalAlarm): LocalAlarm =

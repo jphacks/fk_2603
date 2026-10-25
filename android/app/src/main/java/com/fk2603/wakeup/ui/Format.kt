@@ -33,8 +33,8 @@ fun stateLabel(state: String): String = when (state) {
     "IDLE" -> "待機中"
     "ARMED" -> "アラームセット済み"
     "WAITING" -> "アラーム時刻（ベッドに入ると鳴る）"
-    "RINGING" -> "鳴動中（ベッドを出ると止まる）"
+    "RINGING" -> "鳴動中（ベッドを出て5秒で止まる）"
     "AWAKE" -> "起床（二度寝監視中）"
-    "RESLEEP_ARMED" -> "二度寝検出 → 5分後に再アラーム"
+    "RESLEEP_ARMED" -> "二度寝検出 → 設定した時間で再アラーム"
     else -> state
 }

@@ -52,17 +52,10 @@ private val SNOOZE_COMEBACKS = listOf("スヌーズ？ないよ。", "だから�
 
 /**
  * アラーム鳴動中（プロトの alarm-screen）
- * onStop があればデモ用の「アラームを止める」ボタンを出す。実際はベッドを出ると止まる
- * onHome: ホーム画面に戻る（登録していないアプリは使える）
+ * ベッドを出ると（ui.canStop）「アラームを止める」（onStop）が押せる。押さなくても M5Stack の起床確認で自動で止まる
  */
 @Composable
-fun AlarmScreen(
-    ui: LockUi,
-    nowSec: Long,
-    onStop: (() -> Unit)? = null,
-    onHome: (() -> Unit)? = null,
-    onEmergency: (() -> Unit)? = null,
-) {
+fun AlarmScreen(ui: LockUi, nowSec: Long, onStop: (() -> Unit)? = null, onEmergency: (() -> Unit)? = null) {
     var snooze by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize().background(Dopa.Background).systemBarsPadding()) {
         HazardStripe()
@@ -86,7 +79,7 @@ fun AlarmScreen(
                 }
             }
             Text(
-                "ベッドから出るまで、登録したアプリはロックされます。",
+                "ベッドから出るまで、スマホはロックされます。",
                 fontSize = 12.sp, color = Dopa.Muted, textAlign = TextAlign.Center, maxLines = 2,
             )
         }
@@ -103,8 +96,14 @@ fun AlarmScreen(
                     color = Dopa.Muted, fontSize = 14.sp, fontWeight = FontWeight.Bold,
                 )
             }
-            if (onStop != null) {
+            if (onStop != null && ui.canStop) {
                 BigLimeButton("アラームを止める", onStop)
+                ui.autoStopInSec?.let {
+                    Text(
+                        "押さなくても、あと${it}秒ベッドの外にいれば自動で止まります",
+                        Modifier.fillMaxWidth(), fontSize = 11.sp, color = Dopa.Muted, textAlign = TextAlign.Center,
+                    )
+                }
             } else {
                 Box(
                     Modifier.fillMaxWidth().clip(shape).background(Dopa.Lime).padding(vertical = 18.dp),
@@ -113,14 +112,7 @@ fun AlarmScreen(
                     Text("ベッドから出ると止まる", color = Dopa.LimeForeground, fontFamily = Dopa.Display, fontSize = 20.sp)
                 }
             }
-            onHome?.let {
-                Text(
-                    "ホームに戻る",
-                    Modifier.fillMaxWidth().clip(shape).background(Dopa.Foreground).clickable(onClick = it).padding(vertical = 14.dp),
-                    color = Dopa.Background, fontFamily = Dopa.Display, fontSize = 16.sp, textAlign = TextAlign.Center,
-                )
-            }
-            onEmergency?.let { EmergencyButton(ui.streak, it) }
+            onEmergency?.let { EmergencyButton(ui.streak, ui.appOnly, it) }
         }
     }
 }
@@ -217,7 +209,7 @@ fun LockScreen(
                     Modifier.fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true).clip(RoundedCornerShape(16.dp)),
                 )
                 HSpace(12.dp)
-                Text(TAUNTS[taunt], fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Text(TAUNTS[taunt], fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Dopa.Foreground)
             }
         }
         VSpace(12.dp)
@@ -246,7 +238,7 @@ fun LockScreen(
         }
         onEmergency?.let {
             VSpace(8.dp)
-            EmergencyButton(ui.streak, it)
+            EmergencyButton(ui.streak, ui.appOnly, it)
         }
     }
 }
@@ -254,9 +246,10 @@ fun LockScreen(
 /**
  * 緊急解除（動作確認用の仮ボタン。デザインはチームで差し替える）
  * 1回目で「連続記録が0に戻る」と警告し、EMERGENCY_CONFIRM_MS 以内にもう一度押すと解除
+ * appOnly: 開いているアプリだけを解除する（false = 全体）
  */
 @Composable
-fun EmergencyButton(streak: Int, onEmergency: () -> Unit) {
+fun EmergencyButton(streak: Int, appOnly: Boolean, onEmergency: () -> Unit) {
     var armed by remember { mutableStateOf(false) }
     LaunchedEffect(armed) {
         if (armed) {
@@ -265,10 +258,11 @@ fun EmergencyButton(streak: Int, onEmergency: () -> Unit) {
         }
     }
     val minutes = Config.EMERGENCY_UNLOCK_SEC / 60
+    val target = if (appOnly) "このアプリを" else ""
     val label = when {
-        !armed -> "緊急解除（${minutes}分）"
-        streak > 0 -> "もう一度押すと${minutes}分間解除（${streak}日の連続記録が0に戻ります）"
-        else -> "もう一度押すと${minutes}分間解除（記録に残ります）"
+        !armed -> if (appOnly) "このアプリだけ緊急解除（${minutes}分）" else "緊急解除（${minutes}分）"
+        streak > 0 -> "もう一度押すと${target}${minutes}分間解除（${streak}日の連続記録が0に戻ります）"
+        else -> "もう一度押すと${target}${minutes}分間解除（記録に残ります）"
     }
     Text(
         label,

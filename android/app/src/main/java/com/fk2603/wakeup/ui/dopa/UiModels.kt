@@ -1,12 +1,14 @@
 package com.fk2603.wakeup.ui.dopa
 
+import com.fk2603.wakeup.BedPhoneSession
 import com.fk2603.wakeup.Gamification
 import com.fk2603.wakeup.LocalAlarm
 import com.fk2603.wakeup.M5Config
-import com.fk2603.wakeup.PressureSample
+import com.fk2603.wakeup.Record
 import com.fk2603.wakeup.RoutineDay
 import com.fk2603.wakeup.RoutineTask
 import com.fk2603.wakeup.SleepRecord
+import com.fk2603.wakeup.ui.EmergencyStats
 
 // 画面はここにある状態だけを受け取って描く（バックとの接続は AppViewModel / LockOverlay で行う）
 
@@ -48,6 +50,12 @@ data class StatsUi(
     val progress: Gamification.Progress,
     /** 朝のルーティンの記録（新しい順） */
     val routineHistory: List<RoutineDay>,
+    /** 起床記録（二度寝の回数・日ごとの二度寝の有無） */
+    val records: List<Record> = emptyList(),
+    /** ベッドの上でスマホを触った記録（新しい順） */
+    val bedPhone: List<BedPhoneSession> = emptyList(),
+    /** いま触っている回（まだ保存していない。endAt = 今） */
+    val bedPhoneActive: BedPhoneSession? = null,
     val loading: Boolean,
     val message: String?,
 )
@@ -62,10 +70,6 @@ data class DeviceUi(
     val volume: Int?,
     val pressureRaw: Int?,
     val inBed: Boolean,
-    val samples: List<PressureSample>,
-    /** 最新の睡眠（グラフのラベル用） */
-    val sleepStartAt: Long?,
-    val sleepEndAt: Long?,
     /** null = M5Stack が古いファームで設定を変えられない */
     val config: M5Config?,
     /** ベッドにいる間・アラーム中は M5Stack が設定変更を受け付けない */
@@ -78,6 +82,8 @@ data class DeviceUi(
     val message: String?,
     /** QR で登録した M5Stack の ID。未登録なら null */
     val pairedDevId: String? = null,
+    /** 緊急解除の回数・アプリ別の回数 */
+    val emergency: EmergencyStats? = null,
 )
 
 /** スマホ使用データ（Android の利用時間の記録）が読めるかの確認画面 */
@@ -118,6 +124,14 @@ data class ClearUi(
     val demo: Boolean = false,
     /** 今日の予定（朝のルーティン。これを目標に動き出す） */
     val routine: List<String> = emptyList(),
+    /** ベッドに入った時刻（睡眠記録がなければ null） */
+    val sleptAt: Long? = null,
+    /** アラームが鳴った時刻 */
+    val ringAt: Long = 0,
+    /** ベッドを出た時刻 */
+    val awakeAt: Long = 0,
+    /** 総評（起き方と睡眠時間） */
+    val summary: String = "",
 )
 
 /** オーバーレイ（ロック中の画面） */
@@ -134,4 +148,10 @@ data class LockUi(
     val blockedPkgs: List<String>,
     /** 緊急解除しなかった日の連続日数 */
     val streak: Int = 0,
+    /** true = 緊急解除で開いているアプリだけを解除する（false = 全体） */
+    val appOnly: Boolean = false,
+    /** 鳴動中にベッドを出ている（「アラームを止める」を押せる） */
+    val canStop: Boolean = false,
+    /** このまま出ていれば自動で止まるまでの秒数（わからなければ null） */
+    val autoStopInSec: Long? = null,
 )

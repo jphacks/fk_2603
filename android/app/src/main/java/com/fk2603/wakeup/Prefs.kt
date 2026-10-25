@@ -31,12 +31,25 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("demoRoutinesImported", false)
         set(v) = sp.edit().putBoolean("demoRoutinesImported", v).apply()
 
+    /** デモ用の「ベッドでスマホ」の記録を取り込んだか */
+    var demoBedPhoneImported: Boolean
+        get() = sp.getBoolean("demoBedPhoneImported", false)
+        set(v) = sp.edit().putBoolean("demoBedPhoneImported", v).apply()
+
     // ---- 緊急解除と連続記録 ----
 
     /** 緊急解除が終わる時刻（ms）。これより前はロックしない */
     var emergencyUntilMs: Long
         get() = sp.getLong("emergencyUntilMs", 0)
         set(v) = sp.edit().putLong("emergencyUntilMs", v).apply()
+
+    /** アプリごとの緊急解除が終わる時刻（パッケージ名 → ms）。"pkg=ms;pkg=ms" の1文字列で持つ */
+    var emergencyAppUntil: Map<String, Long>
+        get() = sp.getString("emergencyAppUntil", "")!!.split(";").mapNotNull { e ->
+            val (pkg, ms) = e.split("=").takeIf { it.size == 2 } ?: return@mapNotNull null
+            ms.toLongOrNull()?.let { pkg to it }
+        }.toMap()
+        set(v) = sp.edit().putString("emergencyAppUntil", v.entries.joinToString(";") { "${it.key}=${it.value}" }).apply()
 
     /** 使い始めた日（連続記録の数え始め） */
     var firstDay: LocalDate?

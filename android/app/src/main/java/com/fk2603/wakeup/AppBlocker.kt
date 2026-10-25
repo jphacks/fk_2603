@@ -26,13 +26,6 @@ class AppBlocker(private val context: Context) {
 
     fun hasUsageAccess(): Boolean = hasUsageAccess(context)
 
-    /** いま前面にあるアプリが登録済み（blocked にある）なら true */
-    fun isForegroundBlocked(blocked: Set<String>): Boolean {
-        if (blocked.isEmpty()) return false
-        val pkg = foregroundPackage() ?: return false
-        return pkg in blocked
-    }
-
     /** ホーム画面に並ぶアプリ（除外分を抜いてラベル順）。新しく入れたアプリを拾うため一定時間ごとに読み直す */
     fun launchableApps(): List<InstalledApp> {
         val now = System.currentTimeMillis()
@@ -43,8 +36,8 @@ class AppBlocker(private val context: Context) {
         return apps
     }
 
-    // 前回からの差分だけイベントを読み、最後に前面に来たアプリを覚えておく
-    private fun foregroundPackage(): String? {
+    /** いま前面にあるアプリ。前回からの差分だけイベントを読み、最後に前面に来たアプリを覚えておく */
+    fun foregroundPackage(): String? {
         val now = System.currentTimeMillis()
         val from = if (lastQueryMs == 0L) now - INITIAL_LOOKBACK_MS else lastQueryMs - OVERLAP_MS
         lastQueryMs = now

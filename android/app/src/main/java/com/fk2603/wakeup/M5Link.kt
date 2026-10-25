@@ -76,12 +76,17 @@ data class M5Status(
 data class M5Config(
     val threshold: Int,       // 在床しきい値（raw 0-4095）
     val wakeConfirmSec: Int,  // ベッドを出てこの秒数で起床
+    val resleepDelayMin: Int? = null,  // 二度寝: ベッドに戻ってから再アラームまで（分）。古いファームでは null
 ) {
     companion object {
         const val RAW_MAX = 4095
         // wakeup_alarm.ino の範囲と合わせる
         val THRESHOLD_RANGE = 100..3500
         val WAKE_CONFIRM_RANGE = 5..300
+        val RESLEEP_DELAY_CHOICES = listOf(10, 20, 30)
+
+        /** ベッドを出てもこの秒数は止められない（wakeup_alarm.ino の STOP_AFTER_LEAVE_SEC） */
+        const val STOP_AFTER_LEAVE_SEC = 5
     }
 }
 
@@ -193,9 +198,18 @@ object M5Link {
 
     suspend fun cancelAlarm(): M5Status = command(JSONObject().put("cmd", "cancel"))
 
-    /** 在床しきい値と起床確認時間を変更（ベッドにいる間・アラーム中は M5Exception("locked")） */
-    suspend fun setConfig(threshold: Int, wakeConfirmSec: Int): M5Status =
-        command(JSONObject().put("cmd", "config").put("th", threshold).put("wc", wakeConfirmSec))
+    /** 鳴動を止めて起床を記録する（ベッドにいる間は M5Exception("in bed")。古いファームは "unknown command"） */
+    suspend fun stopAlarm(): M5Status = command(JSONObject().put("cmd", "stop"))
+
+    /**
+     * 在床しきい値・起床確認時間・二度寝の再鳴動までを変更（ベッドにいる間・アラーム中は M5Exception("locked")）
+     * resleepDelayMin = null なら変えない（古いファーム）
+     */
+    suspend fun setConfig(threshold: Int, wakeConfirmSec: Int, resleepDelayMin: Int?): M5Status =
+        command(
+            JSONObject().put("cmd", "config").put("th", threshold).put("wc", wakeConfirmSec)
+                .apply { resleepDelayMin?.let { put("rd", it) } },
+        )
 
     /** 睡眠イベントを受け取ったと知らせる（M5Stack は次のイベントを送る） */
     suspend fun ackSleepEvent(id: Long) {
@@ -535,7 +549,13 @@ object M5Link {
             },
             ackSeq = k?.optInt(0) ?: 0,
             ackError = k?.optString(1).orEmpty(),
-            config = j.optJSONArray("c")?.let { M5Config(threshold = it.getInt(0), wakeConfirmSec = it.getInt(1)) },
+            config = j.optJSONArray("c")?.let {
+                M5Config(
+                    threshold = it.getInt(0),
+                    wakeConfirmSec = it.getInt(1),
+                    resleepDelayMin = if (it.length() > 2) it.getInt(2) else null,
+                )
+            },
             pairingMode = j.optInt("p") == 1,
         )
     }

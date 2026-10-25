@@ -6,6 +6,7 @@ import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.fk2603.wakeup.AppBlocker
+import com.fk2603.wakeup.BedPhoneLog
 import com.fk2603.wakeup.Config
 import com.fk2603.wakeup.DemoSeed
 import com.fk2603.wakeup.EmergencyUnlock
@@ -16,7 +17,6 @@ import com.fk2603.wakeup.ui.dopa.ScreenTimeUi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.fk2603.wakeup.InstalledApp
-import com.fk2603.wakeup.Gamification
 import com.fk2603.wakeup.M5Exception
 import com.fk2603.wakeup.M5Link
 import com.fk2603.wakeup.PairingStore
@@ -31,6 +31,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import com.fk2603.wakeup.SleepStore
 import com.fk2603.wakeup.StatusHolder
+import com.fk2603.wakeup.WakeFeedback
 import com.fk2603.wakeup.WakeResult
 import com.fk2603.wakeup.ui.dopa.ClearUi
 import com.fk2603.wakeup.ui.dopa.SetupWarning
@@ -54,12 +55,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val sleeps = SleepStore.records
     /** 端末に保存した起床記録（戦績の計算元） */
     val wakes = WakeStore.records
-    val pressure = PressureLog.samples
     /** ホームのアラーム（複数・曜日つき）。一番近い1件を MonitorService が M5Stack に送る */
     val alarms = AlarmSchedule.alarms
     /** 朝のルーティンの定義と、日ごとの結果（routine_log.csv） */
     val routineTasks = RoutineStore.tasks
     val routineHistory = RoutineStore.history
+    /** ベッドの上でスマホを触った記録（bed_phone_log.csv） */
+    val bedPhone = BedPhoneLog.sessions
+    val bedPhoneActiveSince = BedPhoneLog.activeSince
 
     private val _nickname = MutableStateFlow(prefs.nickname)
     val nickname: StateFlow<String> = _nickname
@@ -102,11 +105,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // デモ用の1週間分を、初回だけ本番と同じ保存処理で取り込む（以後の実記録は同じファイルに追記）
         DemoSeed.importOnce(app, prefs)
         DemoSeed.importRoutinesOnce(app, prefs)
+        DemoSeed.importBedPhoneOnce(app, prefs)
         AlarmSchedule.load(app)
         RoutineStore.load(app)
         WakeStore.load(app)
         SleepStore.load(app)
         PressureLog.load(app)
+        BedPhoneLog.load(app)
         refreshPermissions()
         refreshRecords()
         viewModelScope.launch {
@@ -127,6 +132,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // ファイルが外で書き換えられていれば読み直す
         SleepStore.load(app)
         WakeStore.load(app)
+        BedPhoneLog.load(app)
         AlarmSchedule.load(app)  // 過ぎた1回だけのアラームはここでオフになる
         RoutineStore.load(app)
         RoutineStore.ensureDay(app, routineDate())  // その日のルーティンを記録に書き出す
@@ -150,6 +156,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         AlarmSchedule.add(app, hour, minute, weekdays)
         RoutineStore.ensureDay(app, routineDate())
         _message.value = "%02d:%02d（%s）を追加しました".format(hour, minute, AlarmSchedule.daysLabel(AlarmSchedule.alarms.value.last()))
+    }
+
+    /** デバッグ: 10秒後に鳴らす（鳴り方は通常のアラームと同じ。サービスの同期でも消されないよう AlarmSchedule に入れる） */
+    fun setDebugAlarm() {
+        val epoch = System.currentTimeMillis() / 1000 + DEBUG_ALARM_SEC
+        AlarmSchedule.debugEpoch = epoch
+        call {
+            M5Link.setAlarm(epoch)
+            "デバッグ: ${DEBUG_ALARM_SEC}秒後（${formatEpoch(epoch, "HH:mm:ss")}）にアラームをセットしました"
+        }
     }
 
     fun setAlarmEnabled(id: Long, enabled: Boolean) = AlarmSchedule.setEnabled(getApplication(), id, enabled)
@@ -211,8 +227,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setConfig(threshold: Int, wakeConfirmSec: Int) = call {
-        M5Link.setConfig(threshold, wakeConfirmSec)
+    fun setConfig(threshold: Int, wakeConfirmSec: Int, resleepDelayMin: Int?) = call {
+        M5Link.setConfig(threshold, wakeConfirmSec, resleepDelayMin)
         "センサー設定を M5Stack に保存しました"
     }
 
@@ -241,7 +257,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val sleepCount = SleepStore.clear(getApplication())
                 val wakeCount = WakeStore.clear(getApplication())
                 val routineDays = RoutineStore.clearLog(getApplication())
-                "起床記録 $wakeCount 件・睡眠記録 $sleepCount 件・ルーティン $routineDays 日分を削除しました"
+                val bedPhoneCount = BedPhoneLog.clear(getApplication())
+                "起床記録 $wakeCount 件・睡眠記録 $sleepCount 件・ルーティン $routineDays 日分・ベッドでスマホ $bedPhoneCount 回を削除しました"
             } catch (e: Exception) {
                 "削除に失敗しました: ${e.message}"
             }
@@ -262,13 +279,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun todayRoutine(): List<String> = RoutineStore.tasks.value.filter { it.appliesTo(LocalDate.now()) }.map { it.title }
 
     /** デモ用のクリア画面（記録・XP には反映しない） */
-    fun demoClear(seconds: Long): ClearUi = buildClear(
-        Record("", "", "", seconds, System.currentTimeMillis() / 1000, false), wakes.value.map { it.toRecord() },
-    ).copy(demo = true)
+    fun demoClear(seconds: Long): ClearUi {
+        val now = System.currentTimeMillis() / 1000
+        return WakeFeedback.build(
+            getApplication(), Record("", "", "", seconds, now - seconds, false), now, wakes.value.map { it.toRecord() }, demo = true,
+        )
+    }
 
     /** 緊急解除（ロック画面の仮ボタンと同じ処理。回数が増え、連続記録が0に戻る） */
     fun emergencyUnlock() {
-        EmergencyUnlock.trigger(getApplication(), prefs)
+        EmergencyUnlock.trigger(getApplication(), prefs, null)
         _emergency.value = readEmergency()
         _message.value = "緊急解除しました（${Config.EMERGENCY_UNLOCK_SEC / 60}分間ロックしません）"
     }
@@ -277,6 +297,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         count = EmergencyUnlock.count(getApplication()).toLong(),
         streak = EmergencyUnlock.streak(getApplication(), prefs),
         best = EmergencyUnlock.bestStreak(getApplication(), prefs),
+        week = EmergencyUnlock.weekCount(getApplication()),
+        byApp = EmergencyUnlock.countByApp(getApplication()),
         activeUntilMs = prefs.emergencyUntilMs,
     )
 
@@ -324,12 +346,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         baselineDays = null, unlockCount = 0, noUnlockStreak = 0, bestStreak = 0, error = null,
     )
 
+    // 普段はサービスがどのアプリの上にもフィードバック画面を出す。重ねて表示が未許可のときだけアプリ内で出す
     private fun onResult(r: WakeResult) {
-        val key = "${r.id}-${r.ringAt}"
+        if (Settings.canDrawOverlays(getApplication())) return
+        val key = WakeFeedback.key(r)
         val seen = prefs.lastSeenResultKey
         val nowSec = System.currentTimeMillis() / 1000
         // 初回起動時や古い記録は、見たことにして出さない
-        if (seen.isEmpty() || nowSec - r.awakeAt > CLEAR_MAX_AGE_SEC) {
+        if (seen.isEmpty() || nowSec - r.awakeAt > WakeFeedback.MAX_AGE_SEC) {
             if (seen != key) prefs.lastSeenResultKey = key
             return
         }
@@ -338,23 +362,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val record = Record("", "", nickname.value, r.durationSec, r.ringAt, r.resleep)
         // サービスが先に端末へ保存していても、同じ記録を二重に数えない
         val others = wakes.value.filterNot { it.ringAt == r.ringAt && it.awakeAt == r.awakeAt }.map { it.toRecord() }
-        _clear.value = buildClear(record, others)
-    }
-
-    private fun buildClear(record: Record, others: List<Record>): ClearUi {
-        val before = Gamification.progress(others)
-        val after = Gamification.progress(others + record)
-        return ClearUi(
-            seconds = record.durationSec,
-            rank = Gamification.rankFor(record.durationSec),
-            xpGain = Gamification.xpFor(record),
-            streak = after.streak,
-            level = before.level,
-            levelXpBefore = before.levelXp,
-            newBadge = (after.badges - before.badges).firstOrNull(),
-            resleep = record.resleep,
-            routine = todayRoutine(),
-        )
+        _clear.value = WakeFeedback.build(getApplication(), record, r.awakeAt, others)
     }
 
     private fun call(block: suspend () -> String) {
@@ -377,9 +385,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         /** この時刻を過ぎたら、ホームのルーティンを次のアラームの日（明日の朝）のものにする */
         private const val EVENING_HOUR = 18
-        private const val CLEAR_MAX_AGE_SEC = 12 * 3600L
+        private const val DEBUG_ALARM_SEC = 10L
     }
 }
 
 /** 緊急解除の回数と「緊急解除しなかった日」の連続記録 */
-data class EmergencyStats(val count: Long, val streak: Int, val best: Int, val activeUntilMs: Long)
+data class EmergencyStats(
+    val count: Long,
+    val streak: Int,
+    val best: Int,
+    val activeUntilMs: Long,
+    /** 直近7日の回数 */
+    val week: Int = 0,
+    /** アプリ（パッケージ名。空 = 全体）ごとの回数（多い順） */
+    val byApp: List<Pair<String, Int>> = emptyList(),
+)

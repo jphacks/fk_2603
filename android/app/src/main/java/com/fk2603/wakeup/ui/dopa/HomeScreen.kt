@@ -1,5 +1,6 @@
 package com.fk2603.wakeup.ui.dopa
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Alarm
 import androidx.compose.material.icons.rounded.Bed
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.QrCodeScanner
@@ -36,10 +38,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.fk2603.wakeup.AlarmSchedule
+import com.fk2603.wakeup.R
 import com.fk2603.wakeup.LocalAlarm
 import com.fk2603.wakeup.ui.formatEpoch
 import com.fk2603.wakeup.ui.theme.Dopa
@@ -58,12 +67,16 @@ fun HomeScreen(
     onToggleRoutineTask: (Long) -> Unit,
     onWarning: (SetupWarning) -> Unit,
     onAddDevice: () -> Unit = {},
+    onDemo: () -> Unit = {},
+    onDebugAlarm: (() -> Unit)? = null,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp),
     ) {
         Header(ui)
+        // デバッグ用（簡易）。10秒後に通常と同じアラームを鳴らす
+        onDebugAlarm?.let { SmallButton("DEBUG: 10秒後にアラーム", it) }
         // 一度登録すれば以降は出さない
         if (!ui.paired) AddDeviceCard(onAddDevice)
         if (ui.warnings.isNotEmpty()) SetupBanner(ui.warnings, onWarning)
@@ -75,6 +88,7 @@ fun HomeScreen(
                 StreakCard(ui.streak, Modifier.weight(1f).fillMaxWidth())
             }
         }
+        DemoButton(onDemo)
         ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 2) }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionLabel("ALARMS") {
@@ -96,13 +110,12 @@ fun HomeScreen(
 @Composable
 private fun Header(ui: HomeUi) {
     Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("おはよ、${ui.nickname.ifBlank { "ドパガキ" }}。", fontSize = 12.sp, color = Dopa.Muted)
-            Row {
-                DisplayText("DOPA", 24.sp)
-                DisplayText("DOPA", 24.sp, color = Dopa.Lime)
-            }
-        }
+        Image(
+            painterResource(R.drawable.oki_lock_logo), "OKI:LOCK",
+            Modifier.weight(1f).height(64.dp),
+            alignment = Alignment.CenterStart,
+            contentScale = ContentScale.Fit,
+        )
         Row(
             Modifier.clip(CircleShape).background(Dopa.Surface).border(1.dp, Dopa.Border, CircleShape)
                 .padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
@@ -231,8 +244,8 @@ private fun WatcherCard(ui: HomeUi, modifier: Modifier) {
         Box(Modifier.fillMaxSize()) {
             Watcher(WatcherMood.SLEEPY, Modifier.fillMaxSize().padding(start = 12.dp, end = 12.dp, top = 42.dp, bottom = 12.dp).floating())
             SpeechBubble(
-                if (ui.inBed) "「布団に負けるなよ。」" else "「今日もやるぞ。」",
-                Modifier.padding(start = 12.dp, top = 4.dp).width(170.dp).height(60.dp),
+                if (ui.inBed) "「まだ寝る気か？」" else "「スマホより俺を見ろ。」",
+                Modifier.padding(start = 19.dp, top = 30.dp).width(170.dp).height(60.dp),
             )
             Sticker("ドパ監視員", Modifier.align(Alignment.BottomStart).padding(12.dp), rotation = -3f)
         }
@@ -277,6 +290,33 @@ private fun StreakCard(streak: Int, modifier: Modifier) {
         Row(verticalAlignment = Alignment.Bottom) {
             DisplayText("$streak", 18.sp)
             Text("日", fontSize = 12.sp, fontFamily = Dopa.Display, modifier = Modifier.padding(start = 2.dp))
+        }
+    }
+}
+
+/** 起床フロー（アラーム → ロック → クリア）を記録に残さず体験する */
+@Composable
+private fun DemoButton(onDemo: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Row(
+        Modifier.fillMaxWidth().clip(shape)
+            .drawBehind {
+                drawRoundRect(
+                    Dopa.Lime.copy(alpha = 0.5f),
+                    style = Stroke(2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 8f))),
+                    cornerRadius = CornerRadius(16.dp.toPx()),
+                )
+            }
+            .clickable(onClick = onDemo)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            DisplayText("アラームを鳴らす", 14.sp)
+            Text("デモ：起床フローを体験する（記録には残りません）", fontSize = 11.sp, color = Dopa.Muted)
+        }
+        IconBadge {
+            Icon(Icons.Rounded.Bolt, null, tint = Dopa.LimeForeground, modifier = Modifier.size(20.dp))
         }
     }
 }

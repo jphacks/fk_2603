@@ -1,5 +1,6 @@
 package com.fk2603.wakeup
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -12,10 +13,12 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import com.fk2603.wakeup.ui.dopa.ClearUi
 import com.fk2603.wakeup.ui.dopa.LockUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,7 +37,8 @@ object StatusHolder {
 
 /**
  * M5Stack と BLE でつながり（M5Link）、
- * - locked の間は、登録したアプリを開いたときだけ全画面オーバーレイを出して使えなくする
+ * - アラーム中は全画面のアラーム画面を出す。ベッドにいる間は、登録したアプリを開いたときだけロック画面を出す
+ * - 起きたら（M5Stack の起床記録が届いたら）、アプリを開いていなくても総評のフィードバック画面を出す
  * - 起床・睡眠などの記録を端末の CSV に保存する
  * - 睡眠のイベントを受け取り、端末内の睡眠記録（SleepStore）に反映する
  */
@@ -52,6 +56,14 @@ class MonitorService : Service() {
     private var savedResultKey = ""
     @Volatile private var snapshotting = false
     private lateinit var screenTimeStore: ScreenTimeStore
+    /** いまロック画面を出しているアプリ（緊急解除の対象）。スマホ全体のロックなら null */
+    private var lockedPkg: String? = null
+    /** 起きたあとに出すフィードバック画面（「スマホを解放する」まで出し続ける） */
+    private var pendingClear: ClearUi? = null
+    private var pendingClearKey = ""
+    private var stopping = false
+    /** ベッドの上でスマホを触り始めた時刻（ms）。触っていなければ 0（戦績の「ベッドでスマホ」） */
+    private var bedPhoneSinceMs = 0L
 
     // 画面ロックを解除した瞬間にロック画面を出す（1秒ごとの判定を待たない）
     private val screenReceiver = object : BroadcastReceiver() {
@@ -63,7 +75,7 @@ class MonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
-        overlay = LockOverlay(this) { triggerEmergency() }
+        overlay = LockOverlay(this, onEmergency = ::triggerEmergency, onStop = ::stopAlarm, onClearDone = ::finishClear)
         blocker = AppBlocker(this)
         screenTimeStore = ScreenTimeStore(this)
         EmergencyUnlock.ensureFirstDay(this, prefs)
@@ -89,6 +101,7 @@ class MonitorService : Service() {
 
     override fun onDestroy() {
         unregisterReceiver(screenReceiver)
+        trackBedPhone(false, System.currentTimeMillis())  // 触っている途中の分を残す
         overlay.hide()
         scope.cancel()
         super.onDestroy()
@@ -97,7 +110,10 @@ class MonitorService : Service() {
     private suspend fun lockLoop() {
         while (scope.isActive) {
             val s = StatusHolder.status.value
-            s?.lastResult?.let { saveResult(it) }
+            s?.lastResult?.let {
+                saveResult(it)
+                prepareClear(it)
+            }
             s?.sleepEvent?.let { receiveSleepEvent(it) }
             // 届いたばかりの値だけをグラフに残す（切断中に古い値を足さない）
             if (s != null && System.currentTimeMillis() - M5Link.lastStatusMs < PRESSURE_FRESH_MS) {
@@ -118,17 +134,21 @@ class MonitorService : Service() {
     }
 
     /**
-     * アラーム中（M5Stack と切れたまま時刻を過ぎた場合も）とベッドにいる間は、
-     * 前面のアプリが登録済みのときだけロック画面を出す（アラーム中は AlarmScreen）。登録していないアプリは使える
-     * - 使用状況へのアクセスがなければ前面のアプリがわからないので、スマホ全体をロックする
-     * - 緊急解除中はロックしない（アラームは M5Stack 側で鳴り続ける）
-     * - ベッドを出て Config.UNLOCK_AFTER_LEAVE_BED_SEC 秒たったら、M5Stack の起床確認を待たずに外す（戻れば即ロック）
+     * 上から順に1つだけ出す
+     * 1. アラーム中（M5Stack と切れたまま時刻を過ぎた場合も）: どのアプリの上にも全画面の AlarmScreen。
+     *    鳴動中はベッドを出ても止まるまで出し続ける（「アラームを止める」か、M5Stack の起床確認で止まる）
+     * 2. 起きたあと: フィードバック画面（ClearScreen）。「スマホを解放する」まで
+     * 3. ベッドにいる間: 前面のアプリが登録済みのときだけ LockScreen。登録していないアプリは使える
+     *    使用状況へのアクセスがなければ前面のアプリがわからないので、スマホ全体をロックする
+     * - 緊急解除したアプリはロックしない。全体の緊急解除中はアラーム画面もロックも出さない（アラームは M5Stack 側で鳴り続ける）
+     * - ベッドを出て Config.UNLOCK_AFTER_LEAVE_BED_SEC 秒たったら、在床のロックは M5Stack の起床確認を待たずに外す（戻れば即ロック）
      */
     private fun evaluateLock() {
         val s = StatusHolder.status.value
         val now = System.currentTimeMillis()
         val lastStatusMs = M5Link.lastStatusMs
         val unlockAfterMs = Config.UNLOCK_IF_UNREACHABLE_SEC * 1000
+        val fresh = now - lastStatusMs < Config.BLE_STALE_MS
         // 最後に届いた状態に従う。M5Stack と長く通信できなければ解除する
         val lockedByM5 = s?.locked == true && now - lastStatusMs < unlockAfterMs
         // M5Stack と切れたままアラーム時刻を過ぎたら、鳴っているとみなしてロックする
@@ -137,6 +157,7 @@ class MonitorService : Service() {
             lastStatusMs < alarmMs && now >= alarmMs && now - alarmMs < unlockAfterMs
         val alarmLock = (lockedByM5 && s?.state in ALARM_ACTIVE_STATES) || alarmPassedWhileAway
         val bedLock = lockedByM5 && !alarmLock
+        val ringing = alarmLock && s?.state == "RINGING"
 
         if (s?.inBed == true) {
             if (inBedSinceMs == 0L) inBedSinceMs = now
@@ -145,32 +166,71 @@ class MonitorService : Service() {
             inBedSinceMs = 0L
             if (s != null && outOfBedSinceMs == 0L) outOfBedSinceMs = now
         }
+        trackBedPhone(s?.inBed == true && fresh, now)
         // 新しい状態で「ベッドにいない」が続いている（切断中の古い状態では判断しない）
-        val leftBed = s != null && !s.inBed && now - lastStatusMs < Config.BLE_STALE_MS &&
+        val leftBed = s != null && !s.inBed && fresh &&
             outOfBedSinceMs > 0 && now - outOfBedSinceMs >= Config.UNLOCK_AFTER_LEAVE_BED_SEC * 1000
 
+        // アプリ内の画面で閉じられたフィードバックは出さない
+        if (pendingClear != null && pendingClearKey == prefs.lastSeenResultKey) pendingClear = null
+
+        val alarmShow = alarmLock && (ringing || !leftBed) && !EmergencyUnlock.isActive(prefs, null, now)
         val appLevel = blocker.hasUsageAccess()
         val blocked = prefs.blockedApps
-        val emergency = EmergencyUnlock.isActive(prefs, now)
-        val show = Settings.canDrawOverlays(this) && !emergency && !leftBed &&
-            (alarmLock || bedLock) && (!appLevel || blocker.isForegroundBlocked(blocked))
-        if (!show || s == null) {
+        val pkg = if (appLevel && bedLock && !alarmShow) blocker.foregroundPackage() else null
+        val bedShow = bedLock && !leftBed && (!appLevel || pkg in blocked) && !EmergencyUnlock.isActive(prefs, pkg, now)
+        val clear = pendingClear
+        if (!Settings.canDrawOverlays(this) || s == null || (!alarmShow && clear == null && !bedShow)) {
+            lockedPkg = null
             overlay.hide()
             return
         }
+        if (!alarmShow && clear != null) {
+            lockedPkg = null
+            overlay.showClear(clear)
+            return
+        }
+        val canStop = ringing && !s.inBed && fresh && outOfBedSinceMs > 0 &&
+            now - outOfBedSinceMs >= M5Config.STOP_AFTER_LEAVE_SEC * 1000
         val ui = LockUi(
-            alarm = alarmLock,
+            alarm = alarmShow,
             resleep = s.state == "RESLEEP_ARMED",
-            connected = now - lastStatusMs < Config.BLE_STALE_MS,
+            connected = fresh,
             inBedSec = if (inBedSinceMs > 0) (now - inBedSinceMs) / 1000 else 0,
             pressureRaw = s.pressureRaw,
             threshold = s.config?.threshold ?: DEFAULT_THRESHOLD,
             inBed = s.inBed,
             blockedPkgs = blocker.launchableApps().filter { it.pkg in blocked }.take(LOCK_ICON_COUNT).map { it.pkg },
             streak = EmergencyUnlock.streak(this, prefs),
+            appOnly = pkg != null,
+            canStop = canStop,
+            autoStopInSec = s.config?.takeIf { canStop && outOfBedSinceMs > 0 }
+                ?.let { (it.wakeConfirmSec - (now - outOfBedSinceMs) / 1000).coerceAtLeast(0) },
         )
-        // アプリ単位のロックなら、ホーム画面に戻れば登録していないアプリは使える
-        overlay.show(ui, if (appLevel) ::goHome else null)
+        lockedPkg = pkg
+        // アプリ単位のロックなら、ホーム画面に戻れば登録していないアプリは使える（アラーム画面には出さない）
+        overlay.show(ui, if (!alarmShow && appLevel) ::goHome else null)
+    }
+
+    // ベッドにいて、画面がつき、ロック画面が外れている間を「スマホを触った1回」として記録する（通知で画面がついただけは数えない）
+    private fun trackBedPhone(inBed: Boolean, now: Long) {
+        val using = inBed && getSystemService(PowerManager::class.java).isInteractive &&
+            !getSystemService(KeyguardManager::class.java).isKeyguardLocked
+        if (using) {
+            if (bedPhoneSinceMs == 0L) {
+                bedPhoneSinceMs = now
+                BedPhoneLog.activeSince.value = now / 1000
+            }
+            return
+        }
+        if (bedPhoneSinceMs == 0L) return
+        try {
+            BedPhoneLog.add(this, BedPhoneSession(bedPhoneSinceMs / 1000, now / 1000))
+        } catch (e: Exception) {
+            Log.w(TAG, "save bed phone failed: ${e.message}")
+        }
+        bedPhoneSinceMs = 0L
+        BedPhoneLog.activeSince.value = 0L
     }
 
     // ホームのアラーム（複数・曜日つき）のうち一番近い1件を M5Stack に送る（M5Stack は1件しか持てない）
@@ -204,8 +264,50 @@ class MonitorService : Service() {
         overlay.hide()
     }
 
+    // 「アラームを止める」: M5Stack に止めてもらい、起床記録が届けばフィードバック画面に切り替わる
+    private fun stopAlarm() {
+        if (stopping) return
+        stopping = true
+        scope.launch {
+            try {
+                M5Link.stopAlarm()
+            } catch (e: Exception) {
+                Log.w(TAG, "stop alarm failed: ${e.message}")  // 古いファームでも、ベッドの外にいれば自動で止まる
+            } finally {
+                stopping = false
+            }
+        }
+    }
+
+    // 新しい起床記録が届いたら、フィードバック画面を用意する（初回起動時や古い記録は、見たことにして出さない）
+    private fun prepareClear(result: WakeResult) {
+        val key = WakeFeedback.key(result)
+        val seen = prefs.lastSeenResultKey
+        if (key == seen || key == pendingClearKey) return
+        if (seen.isEmpty() || System.currentTimeMillis() / 1000 - result.awakeAt > WakeFeedback.MAX_AGE_SEC) {
+            prefs.lastSeenResultKey = key
+            return
+        }
+        try {
+            val record = Record("", "", prefs.nickname, result.durationSec, result.ringAt, result.resleep)
+            val others = WakeStore.records.value
+                .filterNot { it.ringAt == result.ringAt && it.awakeAt == result.awakeAt }
+                .map { it.toRecord() }
+            pendingClear = WakeFeedback.build(this, record, result.awakeAt, others)
+            pendingClearKey = key
+        } catch (e: Exception) {
+            Log.w(TAG, "build feedback failed: ${e.message}")
+        }
+    }
+
+    private fun finishClear() {
+        prefs.lastSeenResultKey = pendingClearKey
+        pendingClear = null
+        evaluateLock()
+    }
+
     private fun triggerEmergency() {
-        EmergencyUnlock.trigger(this, prefs)
+        EmergencyUnlock.trigger(this, prefs, lockedPkg)
         evaluateLock()
     }
 

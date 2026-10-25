@@ -16,29 +16,47 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.ui.Modifier
 import com.fk2603.wakeup.ui.dopa.AlarmScreen
+import com.fk2603.wakeup.ui.dopa.ClearScreen
+import com.fk2603.wakeup.ui.dopa.ClearUi
 import com.fk2603.wakeup.ui.dopa.LockScreen
 import com.fk2603.wakeup.ui.dopa.LockUi
 import com.fk2603.wakeup.ui.theme.DopaTheme
 import kotlinx.coroutines.delay
 
 /**
- * 登録アプリの上に出す全画面オーバーレイ（Compose で描く）
- * - アラーム中: AlarmScreen
- * - ベッドにいる間: LockScreen
- * どちらも onHome があれば「ホームに戻る」を出す
- * どちらにも「緊急解除」ボタン（2回押し）を出し、押されたら onEmergency を呼ぶ
+ * 他のアプリの上に出す全画面オーバーレイ（Compose で描く）
+ * - アラーム中: AlarmScreen（どのアプリの上にも出す。ベッドを出ると onStop で止められる）
+ * - ベッドにいる間: 登録アプリの上に LockScreen（onHome があれば「ホームに戻る」を出す）
+ * - 起きたあと: ClearScreen（就寝・起床の総評。「スマホを解放する」で onClearDone）
+ * アラーム・ロックには「緊急解除」ボタン（2回押し）を出し、押されたら onEmergency を呼ぶ
  */
-class LockOverlay(private val context: Context, private val onEmergency: () -> Unit) {
+class LockOverlay(
+    private val context: Context,
+    private val onEmergency: () -> Unit,
+    private val onStop: () -> Unit,
+    private val onClearDone: () -> Unit,
+) {
     private val wm = context.getSystemService(WindowManager::class.java)
     private var root: ComposeView? = null
     private var owner: OverlayOwner? = null
     private var ui by mutableStateOf<LockUi?>(null)
+    private var clear by mutableStateOf<ClearUi?>(null)
     private var onHome by mutableStateOf<(() -> Unit)?>(null)
 
     fun show(state: LockUi, home: (() -> Unit)?) {
         ui = state
+        clear = null
         onHome = home
+        if (root == null) attach()
+    }
+
+    fun showClear(state: ClearUi) {
+        clear = state
+        ui = null
         if (root == null) attach()
     }
 
@@ -62,8 +80,12 @@ class LockOverlay(private val context: Context, private val onEmergency: () -> U
                             value = System.currentTimeMillis() / 1000
                         }
                     }
+                    clear?.let {
+                        Box(Modifier.systemBarsPadding()) { ClearScreen(it, onClearDone) }
+                        return@DopaTheme
+                    }
                     val s = ui ?: return@DopaTheme
-                    if (s.alarm) AlarmScreen(s, nowSec, onHome = onHome, onEmergency = onEmergency)
+                    if (s.alarm) AlarmScreen(s, nowSec, onStop = onStop, onEmergency = onEmergency)
                     else LockScreen(s, onHome = onHome, onEmergency = onEmergency)
                 }
             }

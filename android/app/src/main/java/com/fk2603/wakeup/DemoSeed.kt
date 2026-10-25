@@ -20,6 +20,7 @@ object DemoSeed {
     private const val SLEEP_FILE = "demo/sleep_events.csv"
     private const val ROUTINE_TASK_FILE = "demo/routine_tasks.csv"
     private const val ROUTINE_LOG_FILE = "demo/routine_log.csv"
+    private const val BED_PHONE_FILE = "demo/bed_phone.csv"
 
     @Synchronized
     fun importOnce(context: Context, prefs: Prefs = Prefs(context)) {
@@ -65,6 +66,24 @@ object DemoSeed {
             Log.i(TAG, "imported ${tasks.size} routine tasks")
         } catch (e: Exception) {
             Log.w(TAG, "routine import failed: $e")
+        }
+    }
+
+    /** デモ用の「ベッドの上でスマホを触った」記録を、初回だけ本番と同じ BedPhoneLog.add() で取り込む */
+    @Synchronized
+    fun importBedPhoneOnce(context: Context, prefs: Prefs = Prefs(context)) {
+        if (prefs.demoBedPhoneImported) return
+        try {
+            val today = LocalDate.now()
+            var n = 0
+            rows(context, BED_PHONE_FILE).forEach { c ->
+                val start = epoch(today, c[0], c[1])
+                if (BedPhoneLog.add(context, BedPhoneSession(start, start + c[2].toLong() * 60))) n++
+            }
+            prefs.demoBedPhoneImported = true
+            Log.i(TAG, "imported $n bed phone sessions")
+        } catch (e: Exception) {
+            Log.w(TAG, "bed phone import failed: $e")
         }
     }
 
