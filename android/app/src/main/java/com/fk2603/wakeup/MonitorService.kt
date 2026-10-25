@@ -34,7 +34,7 @@ object StatusHolder {
 
 /**
  * M5Stack と BLE でつながり（M5Link）、
- * - locked の間は全画面オーバーレイでスマホを使えなくする
+ * - locked の間は、登録したアプリを開いたときだけ全画面オーバーレイを出して使えなくする
  * - 起床・睡眠などの記録を端末の CSV に保存する
  * - 睡眠のイベントを受け取り、端末内の睡眠記録（SleepStore）に反映する
  */
@@ -82,6 +82,7 @@ class MonitorService : Service() {
         )
         M5Link.start(this)
         scope.launch { lockLoop() }
+        scope.launch { appCheckLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
@@ -102,16 +103,24 @@ class MonitorService : Service() {
             if (s != null && System.currentTimeMillis() - M5Link.lastStatusMs < PRESSURE_FRESH_MS) {
                 PressureLog.add(this, s.pressureRaw)
             }
-            evaluateLock()
             syncAlarmToM5()
             snapshotScreenTimeIfDue()
             delay(LOCK_CHECK_INTERVAL_MS)
         }
     }
 
+    // 登録アプリを開いたらすぐロック画面を出すため、前面のアプリは短い間隔で見る
+    private suspend fun appCheckLoop() {
+        while (scope.isActive) {
+            evaluateLock()
+            delay(APP_CHECK_INTERVAL_MS)
+        }
+    }
+
     /**
-     * - アラーム中（M5Stack と切れたまま時刻を過ぎた場合も）: スマホ全体をロック
-     * - ベッドにいる間: 前面のアプリが封印する種類のときだけロック（使用状況へのアクセスがなければ全体をロック）
+     * アラーム中（M5Stack と切れたまま時刻を過ぎた場合も）とベッドにいる間は、
+     * 前面のアプリが登録済みのときだけロック画面を出す（アラーム中は AlarmScreen）。登録していないアプリは使える
+     * - 使用状況へのアクセスがなければ前面のアプリがわからないので、スマホ全体をロックする
      * - 緊急解除中はロックしない（アラームは M5Stack 側で鳴り続ける）
      * - ベッドを出て Config.UNLOCK_AFTER_LEAVE_BED_SEC 秒たったら、M5Stack の起床確認を待たずに外す（戻れば即ロック）
      */
@@ -141,13 +150,10 @@ class MonitorService : Service() {
             outOfBedSinceMs > 0 && now - outOfBedSinceMs >= Config.UNLOCK_AFTER_LEAVE_BED_SEC * 1000
 
         val appLevel = blocker.hasUsageAccess()
-        val allowed = prefs.allowedApps
+        val blocked = prefs.blockedApps
         val emergency = EmergencyUnlock.isActive(prefs, now)
-        val show = Settings.canDrawOverlays(this) && !emergency && !leftBed && when {
-            alarmLock -> true
-            bedLock -> !appLevel || blocker.isForegroundBlocked(allowed)
-            else -> false
-        }
+        val show = Settings.canDrawOverlays(this) && !emergency && !leftBed &&
+            (alarmLock || bedLock) && (!appLevel || blocker.isForegroundBlocked(blocked))
         if (!show || s == null) {
             overlay.hide()
             return
@@ -160,11 +166,11 @@ class MonitorService : Service() {
             pressureRaw = s.pressureRaw,
             threshold = s.config?.threshold ?: DEFAULT_THRESHOLD,
             inBed = s.inBed,
-            blockedPkgs = blocker.launchableApps().filter { it.pkg !in allowed }.take(LOCK_ICON_COUNT).map { it.pkg },
+            blockedPkgs = blocker.launchableApps().filter { it.pkg in blocked }.take(LOCK_ICON_COUNT).map { it.pkg },
             streak = EmergencyUnlock.streak(this, prefs),
         )
-        // アプリ単位の封印なら、ホーム画面に戻れば他のアプリは使える
-        overlay.show(ui, if (bedLock && appLevel) ::goHome else null)
+        // アプリ単位のロックなら、ホーム画面に戻れば登録していないアプリは使える
+        overlay.show(ui, if (appLevel) ::goHome else null)
     }
 
     // ホームのアラーム（複数・曜日つき）のうち一番近い1件を M5Stack に送る（M5Stack は1件しか持てない）
@@ -274,6 +280,8 @@ class MonitorService : Service() {
         private const val CHANNEL_ID = "monitor"
         private const val NOTIFICATION_ID = 1
         private const val LOCK_CHECK_INTERVAL_MS = 1_000L
+        /** 前面のアプリを確認する間隔（登録アプリを開いてからロック画面が出るまでの最大の遅れ） */
+        private const val APP_CHECK_INTERVAL_MS = 300L
         /** ロック画面に並べる封印中アプリのアイコン数 */
         private const val LOCK_ICON_COUNT = 5
 
@@ -286,7 +294,7 @@ class MonitorService : Service() {
         /** M5Stack へのアラーム送信の間隔（失敗したときに毎秒送り直さない） */
         private const val ALARM_SYNC_RETRY_MS = 10_000L
 
-        /** 鳴動中・二度寝検出中（スマホ全体をロックする） */
+        /** 鳴動中・二度寝検出中（登録アプリを開くとアラーム画面を出す） */
         private val ALARM_ACTIVE_STATES = setOf("RINGING", "RESLEEP_ARMED")
 
         private const val PRESSURE_FRESH_MS = 3_000L

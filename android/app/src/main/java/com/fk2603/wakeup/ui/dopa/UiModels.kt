@@ -14,7 +14,7 @@ import com.fk2603.wakeup.SleepRecord
 enum class SetupWarning(val short: String, val text: String, val action: String) {
     OVERLAY("重ねて表示", "ロックを表示するため「他のアプリの上に重ねて表示」を許可してください", "設定を開く"),
     BATTERY("電池の最適化", "画面オフ中に監視が止まらないよう、電池の最適化を無効にしてください", "無効にする"),
-    USAGE("使用状況へのアクセス", "選んだアプリだけを封印するため「使用状況へのアクセス」を許可してください（未許可だとベッドの上ではスマホ全体をロック）", "設定を開く"),
+    USAGE("使用状況へのアクセス", "登録したアプリだけをロックするため「使用状況へのアクセス」を許可してください（未許可だとベッドの上ではスマホ全体をロック）", "設定を開く"),
 }
 
 data class HomeUi(
@@ -130,7 +130,7 @@ data class LockUi(
     val pressureRaw: Int,
     val threshold: Int,
     val inBed: Boolean,
-    /** 封印中のアプリ（アイコン表示用に先頭数件） */
+    /** ロックに登録したアプリ（アイコン表示用に先頭数件） */
     val blockedPkgs: List<String>,
     /** 緊急解除しなかった日の連続日数 */
     val streak: Int = 0,

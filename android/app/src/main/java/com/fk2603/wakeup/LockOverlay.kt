@@ -23,9 +23,10 @@ import com.fk2603.wakeup.ui.theme.DopaTheme
 import kotlinx.coroutines.delay
 
 /**
- * ロック中に他のアプリの上に出す全画面オーバーレイ（Compose で描く）
+ * 登録アプリの上に出す全画面オーバーレイ（Compose で描く）
  * - アラーム中: AlarmScreen
- * - ベッドにいる間: LockScreen（onHome があれば「ホームに戻る」を出す）
+ * - ベッドにいる間: LockScreen
+ * どちらも onHome があれば「ホームに戻る」を出す
  * どちらにも「緊急解除」ボタン（2回押し）を出し、押されたら onEmergency を呼ぶ
  */
 class LockOverlay(private val context: Context, private val onEmergency: () -> Unit) {
@@ -62,7 +63,7 @@ class LockOverlay(private val context: Context, private val onEmergency: () -> U
                         }
                     }
                     val s = ui ?: return@DopaTheme
-                    if (s.alarm) AlarmScreen(s, nowSec, onEmergency = onEmergency)
+                    if (s.alarm) AlarmScreen(s, nowSec, onHome = onHome, onEmergency = onEmergency)
                     else LockScreen(s, onHome = onHome, onEmergency = onEmergency)
                 }
             }

@@ -83,9 +83,9 @@ fun AppShell(vm: AppViewModel) {
     val routineTasks by vm.routineTasks.collectAsState()
     val routineHistory by vm.routineHistory.collectAsState()
     val nickname by vm.nickname.collectAsState()
-    val allowed by vm.allowed.collectAsState()
+    val blocked by vm.blocked.collectAsState()
     val apps by vm.apps.collectAsState()
-    val blockApps = remember(apps, allowed) { apps.map { BlockApp(it.pkg, it.label, it.pkg !in allowed) } }
+    val blockApps = remember(apps, blocked) { apps.map { BlockApp(it.pkg, it.label, it.pkg in blocked) } }
     val warnings by vm.warnings.collectAsState()
     val usageAccess by vm.usageAccess.collectAsState()
     val message by vm.message.collectAsState()

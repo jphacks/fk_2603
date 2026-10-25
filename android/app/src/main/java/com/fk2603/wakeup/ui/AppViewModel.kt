@@ -64,11 +64,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _nickname = MutableStateFlow(prefs.nickname)
     val nickname: StateFlow<String> = _nickname
 
-    /** 在床中も使えるアプリ（封印を解除したもの）。ここにないアプリはすべて封印 */
-    private val _allowed = MutableStateFlow(prefs.allowedApps)
-    val allowed: StateFlow<Set<String>> = _allowed
+    /** 起きるまでロックするアプリ（ユーザーが登録したもの）。ここにないアプリはいつでも使える */
+    private val _blocked = MutableStateFlow(prefs.blockedApps)
+    val blocked: StateFlow<Set<String>> = _blocked
 
-    /** 封印の対象にできるアプリ（ホーム画面に並ぶもの） */
+    /** ロックに登録できるアプリ（ホーム画面に並ぶもの） */
     private val _apps = MutableStateFlow<List<InstalledApp>>(emptyList())
     val apps: StateFlow<List<InstalledApp>> = _apps
 
@@ -216,17 +216,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         "センサー設定を M5Stack に保存しました"
     }
 
-    /** アプリごとに封印する／解除する */
+    /** アプリをロックに登録する／外す */
     fun setAppBlocked(pkg: String, blocked: Boolean) =
-        saveAllowed(if (blocked) _allowed.value - pkg else _allowed.value + pkg)
+        saveBlocked(if (blocked) _blocked.value + pkg else _blocked.value - pkg)
 
-    fun blockAllApps() = saveAllowed(emptySet())
+    fun blockAllApps() = saveBlocked(_apps.value.map { it.pkg }.toSet())
 
-    fun allowAllApps() = saveAllowed(_apps.value.map { it.pkg }.toSet())
+    fun allowAllApps() = saveBlocked(emptySet())
 
-    private fun saveAllowed(next: Set<String>) {
-        prefs.allowedApps = next
-        _allowed.value = next
+    private fun saveBlocked(next: Set<String>) {
+        prefs.blockedApps = next
+        _blocked.value = next
     }
 
     fun saveNickname(name: String) {

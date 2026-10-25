@@ -16,10 +16,10 @@ class Prefs(context: Context) {
         get() = sp.getString("lastSeenResultKey", "")!!
         set(v) = sp.edit().putString("lastSeenResultKey", v).apply()
 
-    /** ベッドにいる間も使えるアプリ（ユーザーが封印を解除したもの）。ここにないアプリはすべて封印する */
-    var allowedApps: Set<String>
-        get() = sp.getStringSet("allowedApps", null)?.toSet() ?: emptySet()
-        set(v) = sp.edit().putStringSet("allowedApps", v).apply()
+    /** 起きるまでロックするアプリ（ユーザーが登録したもの）。ここにないアプリはいつでも使える */
+    var blockedApps: Set<String>
+        get() = sp.getStringSet("blockedApps", null)?.toSet() ?: emptySet()
+        set(v) = sp.edit().putStringSet("blockedApps", v).apply()
 
     /** デモ用の1週間分の記録を取り込んだか（取り込みは1回だけ） */
     var demoImported: Boolean

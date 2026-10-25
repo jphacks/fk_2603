@@ -9,29 +9,28 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 
-/** 封印の対象にできるアプリ（ホーム画面に並ぶもの） */
+/** ロックに登録できるアプリ（ホーム画面に並ぶもの） */
 data class InstalledApp(val pkg: String, val label: String)
 
 /**
- * 前面に出ているアプリが封印対象かを判定する（「使用状況へのアクセス」の許可が必要）
- * - ホーム画面に並ぶアプリはすべて対象。ユーザーが解除したもの（allowed）だけ使える
- * - 自アプリ・ホーム画面・電話は対象にしない
+ * 前面に出ているアプリがロック対象かを判定する（「使用状況へのアクセス」の許可が必要）
+ * - ユーザーが登録したアプリ（blocked）だけが対象。それ以外はいつでも使える
+ * - 自アプリ・ホーム画面・電話は登録の一覧に出さない
  */
 class AppBlocker(private val context: Context) {
     private val usm = context.getSystemService(UsageStatsManager::class.java)
     private var foreground: String? = null
     private var lastQueryMs = 0L
     private var apps: List<InstalledApp> = emptyList()
-    private var appPkgs: Set<String> = emptySet()
     private var appsLoadedMs = 0L
 
     fun hasUsageAccess(): Boolean = hasUsageAccess(context)
 
-    /** いま前面にあるアプリが封印対象（一覧にあって allowed にない）なら true */
-    fun isForegroundBlocked(allowed: Set<String>): Boolean {
+    /** いま前面にあるアプリが登録済み（blocked にある）なら true */
+    fun isForegroundBlocked(blocked: Set<String>): Boolean {
+        if (blocked.isEmpty()) return false
         val pkg = foregroundPackage() ?: return false
-        launchableApps()
-        return pkg in appPkgs && pkg !in allowed
+        return pkg in blocked
     }
 
     /** ホーム画面に並ぶアプリ（除外分を抜いてラベル順）。新しく入れたアプリを拾うため一定時間ごとに読み直す */
@@ -39,7 +38,6 @@ class AppBlocker(private val context: Context) {
         val now = System.currentTimeMillis()
         if (appsLoadedMs == 0L || now - appsLoadedMs >= APPS_CACHE_MS) {
             apps = loadLaunchableApps(context)
-            appPkgs = apps.map { it.pkg }.toSet()
             appsLoadedMs = now
         }
         return apps

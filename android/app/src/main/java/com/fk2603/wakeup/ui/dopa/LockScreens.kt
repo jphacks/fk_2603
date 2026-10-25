@@ -53,9 +53,16 @@ private val SNOOZE_COMEBACKS = listOf("スヌーズ？ないよ。", "だから�
 /**
  * アラーム鳴動中（プロトの alarm-screen）
  * onStop があればデモ用の「アラームを止める」ボタンを出す。実際はベッドを出ると止まる
+ * onHome: ホーム画面に戻る（登録していないアプリは使える）
  */
 @Composable
-fun AlarmScreen(ui: LockUi, nowSec: Long, onStop: (() -> Unit)? = null, onEmergency: (() -> Unit)? = null) {
+fun AlarmScreen(
+    ui: LockUi,
+    nowSec: Long,
+    onStop: (() -> Unit)? = null,
+    onHome: (() -> Unit)? = null,
+    onEmergency: (() -> Unit)? = null,
+) {
     var snooze by remember { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize().background(Dopa.Background).systemBarsPadding()) {
         HazardStripe()
@@ -79,7 +86,7 @@ fun AlarmScreen(ui: LockUi, nowSec: Long, onStop: (() -> Unit)? = null, onEmerge
                 }
             }
             Text(
-                "ベッドから出るまで SNS とショート動画は封印されます。",
+                "ベッドから出るまで、登録したアプリはロックされます。",
                 fontSize = 12.sp, color = Dopa.Muted, textAlign = TextAlign.Center, maxLines = 2,
             )
         }
@@ -106,6 +113,13 @@ fun AlarmScreen(ui: LockUi, nowSec: Long, onStop: (() -> Unit)? = null, onEmerge
                     Text("ベッドから出ると止まる", color = Dopa.LimeForeground, fontFamily = Dopa.Display, fontSize = 20.sp)
                 }
             }
+            onHome?.let {
+                Text(
+                    "ホームに戻る",
+                    Modifier.fillMaxWidth().clip(shape).background(Dopa.Foreground).clickable(onClick = it).padding(vertical = 14.dp),
+                    color = Dopa.Background, fontFamily = Dopa.Display, fontSize = 16.sp, textAlign = TextAlign.Center,
+                )
+            }
             onEmergency?.let { EmergencyButton(ui.streak, it) }
         }
     }
@@ -121,7 +135,7 @@ private val TAUNTS = listOf(
 
 /**
  * ベッド在床ロック（プロトの lock-screen）
- * onHome: ホーム画面に戻る（封印していないアプリは使える）。onLeaveBed: デモ用の離床ボタン
+ * onHome: ホーム画面に戻る（登録していないアプリは使える）。onLeaveBed: デモ用の離床ボタン
  */
 @Composable
 fun LockScreen(
@@ -175,7 +189,7 @@ fun LockScreen(
                 fontSize = 11.sp, color = Dopa.Muted,
             )
         }
-        // 封印中のアプリ（先頭数件）を実アイコンで並べる
+        // ロック中のアプリ（登録したものの先頭数件）を実アイコンで並べる
         if (ui.blockedPkgs.isNotEmpty()) {
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
                 ui.blockedPkgs.forEach { pkg ->
@@ -226,7 +240,7 @@ fun LockScreen(
                 color = Dopa.Background, fontFamily = Dopa.Display, fontSize = 16.sp, textAlign = TextAlign.Center,
             )
             Text(
-                "封印していないアプリは使えます｜緊急通話は常に利用可", Modifier.fillMaxWidth().padding(top = 6.dp),
+                "登録していないアプリは使えます｜緊急通話は常に利用可", Modifier.fillMaxWidth().padding(top = 6.dp),
                 fontSize = 10.sp, color = Dopa.Muted, textAlign = TextAlign.Center,
             )
         }

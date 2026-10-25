@@ -87,8 +87,6 @@ fun DeviceScreen(
         }
         ui.message?.let { Text(it, color = Dopa.Lime, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
 
-        DeviceCard(ui)
-
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionLabel("PRESSURE LOG") { SectionHint("直近8時間") }
             PressureChart(ui, nowSec)
@@ -100,12 +98,13 @@ fun DeviceScreen(
         }
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            SectionLabel("在床中に封印するアプリ") {
-                SectionHint("${ui.apps.count { it.blocked }} / ${ui.apps.size} を制限中")
+            SectionLabel("起きるまでロックするアプリ") {
+                SectionHint("${ui.apps.count { it.blocked }} 個を登録中")
             }
+            SectionHint("チェックしたアプリを開くと、ベッドから出るまでロック画面が出ます。ほかのアプリは使えます。")
             if (!ui.usageAccess) {
                 Text(
-                    "「使用状況へのアクセス」が未許可のため、いまはベッドの上ではスマホ全体をロックします。許可するとチェックしたアプリだけを封印します。",
+                    "「使用状況へのアクセス」が未許可のため、いまはベッドの上ではスマホ全体をロックします。許可すると登録したアプリだけをロックします。",
                     fontSize = 11.sp, color = Dopa.Alert,
                 )
                 SmallButton("使用状況へのアクセスを許可", onUsageAccess)
@@ -335,7 +334,7 @@ private fun RangeField(
     Text(hint, fontSize = 11.sp, color = Dopa.Muted)
 }
 
-/** 封印するアプリの一覧（チェック = 封印）。最初は全部チェック済みで、使いたいものだけ外す */
+/** ロックするアプリの一覧（チェック = 登録）。最初は何も登録せず、ロックしたいものにチェックを入れる */
 @Composable
 private fun BlockAppList(
     apps: List<BlockApp>,
@@ -345,8 +344,8 @@ private fun BlockAppList(
 ) {
     var query by remember { mutableStateOf("") }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SmallButton("すべて制限", onBlockAll, enabled = apps.any { !it.blocked })
-        SmallButton("すべて解除", onAllowAll, enabled = apps.any { it.blocked })
+        SmallButton("すべて登録", onBlockAll, enabled = apps.any { !it.blocked })
+        SmallButton("すべて外す", onAllowAll, enabled = apps.any { it.blocked })
     }
     OutlinedTextField(
         value = query,
