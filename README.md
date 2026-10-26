@@ -207,25 +207,25 @@ OKI:LOCKでは、M5Stack BasicとFSR406圧力センサを用いて、ベッド�
 - **FSR406（圧力センサ）**：ベッドにかかる荷重の変化を検知する
 - **Androidスマートフォン**：BLE通信によってセンサの状態を受け取り、対象アプリの利用を制限する
 
-#### 回路図
+#### ▼回路図
 
 ![OKI:LOCKの回路図](m5stack_fsr_schematic.png)
 
-#### 配線図
+#### ▼配線図
 
 ![OKI:LOCKの配線図](m5stack_fsr_wiring.png)
 
 #### 実機写真
 
-**圧力センサ▼**
+**▼圧力センサ**
 
 ![OKI:LOCKの圧力センサ](IMG_5494%20%281%29.jpg)
 
-**M5Stack Basic▼**
+**▼M5Stack Basic**
 
 ![OKI:LOCKのM5Stack](IMG_5495%20%281%29.jpg)
 
-**ハードウェア全体▼**
+**▼ハードウェア全体**
 
 ![OKI:LOCKのハードウェア全体](IMG_5498.jpg)
 #### ハードウェアの工夫
