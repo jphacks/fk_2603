@@ -153,7 +153,7 @@ https://github.com/user-attachments/assets/5803db52-7ff7-4cf9-a38b-806699d34af8
 
 ---
 
-**アプリの自動ロック｜動作デモ動画①**
+**アプリの自動ロック｜動作デモ動画①（圧力センサが感知している時のみ）**
 
 https://github.com/user-attachments/assets/dadadcbc-4ff9-468a-867f-6735e8a26a05
 
