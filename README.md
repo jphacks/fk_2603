@@ -217,15 +217,15 @@ OKI:LOCKでは、M5Stack BasicとFSR406圧力センサを用いて、ベッド�
 
 #### 実機写真
 
-**圧力センサ**
+**圧力センサ▼**
 
 ![OKI:LOCKの圧力センサ](IMG_5494%20%281%29.jpg)
 
-**M5Stack Basic**
+**M5Stack Basic▼**
 
 ![OKI:LOCKのM5Stack](IMG_5495%20%281%29.jpg)
 
-**ハードウェア全体**
+**ハードウェア全体▼**
 
 ![OKI:LOCKのハードウェア全体](IMG_5498.jpg)
 #### ハードウェアの工夫
