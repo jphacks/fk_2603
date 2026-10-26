@@ -133,12 +133,6 @@ https://github.com/user-attachments/assets/5803db52-7ff7-4cf9-a38b-806699d34af8
 
 https://github.com/user-attachments/assets/dadadcbc-4ff9-468a-867f-6735e8a26a05
 
----
-
-**アプリの自動ロック｜動作デモ動画②**
-
-https://github.com/user-attachments/assets/97dc07c0-0502-48e8-9ba0-b4855f667a74
-
 
 #### 2. 二度寝を自動で検出して再アラーム
 起床後20分以内にベッドへ戻ると二度寝とみなし、戻ってから10 / 20 / 30分後（アプリで選ぶ）にもう一度鳴らす。3度寝はその場ですぐ鳴らす。
@@ -159,6 +153,12 @@ OKI:LOCKが目指すのは、単に目を覚ますことではなく、ベッド
 
 #### 4. QR で登録したスマホだけがつながる
 M5Stack の画面に表示した QR を読んだスマホとだけ、暗号化した BLE で通信する。意図しない他人のデバイスとはつながらない。
+
+---
+
+**アプリとM５Stackの接続｜動作デモ動画②**
+
+https://github.com/user-attachments/assets/97dc07c0-0502-48e8-9ba0-b4855f667a74
 
 ### 解決できること
 
