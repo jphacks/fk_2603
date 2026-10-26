@@ -1,5 +1,6 @@
 # OKI:LOCK（↓プロモーション動画あり）
 
+**OKI:LOCK プロモーション動画**
 [![OKI:LOCK プロモーション動画](https://img.youtube.com/vi/VT82YRhZjAk/maxresdefault.jpg)](https://youtu.be/VT82YRhZjAk)
 
 チーム二度寝界隈
