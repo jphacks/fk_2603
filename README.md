@@ -6,7 +6,9 @@
 
 **OKI:LOCK プロモーション動画**
 
-[![OKI:LOCK プロモーション動画](https://youtu.be/q7n7INB-EGs)
+
+[![OKI:LOCK プロモーション動画](https://img.youtube.com/vi/q7n7INB-EGs/hqdefault.jpg)](https://youtu.be/q7n7INB-EGs)
+
 
 ---
 
