@@ -9,7 +9,7 @@
 
 [![OKI:LOCK プロモーション動画](https://img.youtube.com/vi/q7n7INB-EGs/hqdefault.jpg)](https://youtu.be/q7n7INB-EGs)
 
-**📢 デモ動画更新のお知らせ（10月27日 10:30）**
+**📢 プロモーション動画更新のお知らせ（10月27日 10:30）**
 
 OKI:LOCKの機能や動作をより分かりやすくお伝えするため、紹介動画を更新しました。
 
